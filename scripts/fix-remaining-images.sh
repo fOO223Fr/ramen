@@ -53,35 +53,44 @@ load_images() {
     wait
 }
 
+# Patch container by name using strategic merge (matches by name, not index)
+patch_container() {
+    local context=$1
+    local resource_type=$2
+    local resource_name=$3
+    local namespace=$4
+    local patch_json=$5
+    kubectl --context="$context" patch "$resource_type" "$resource_name" -n "$namespace" \
+        --type='strategic' -p="$patch_json" 2>/dev/null || true
+}
+
 # Function to patch deployments with custom images to use standard ones
+# All patches target containers by NAME (not index) for robustness.
 patch_custom_images() {
     echo -e "${YELLOW}Patching deployments with custom nladha images...${NC}"
     
-    # Replace custom CSI addons controller image
-    kubectl --context=dr1 patch deployment -n csi-addons-system csi-addons-controller-manager \
-        --type='json' \
-        -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "quay.io/csiaddons/k8s-controller:latest"}]' || true
-    
-    kubectl --context=dr2 patch deployment -n csi-addons-system csi-addons-controller-manager \
-        --type='json' \
-        -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "quay.io/csiaddons/k8s-controller:latest"}]' || true
+    # Replace custom CSI addons controller image (container name: manager)
+    for context in dr1 dr2; do
+        patch_container "$context" deployment csi-addons-controller-manager csi-addons-system \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"manager","image":"quay.io/csiaddons/k8s-controller:latest"}]}}}}'
+    done
     
     # Replace custom CSI addons sidecar images in Rook DaemonSets/Deployments
     for context in dr1 dr2; do
-        echo -e "${YELLOW}Patching CSI RBD provisioner in $context...${NC}"
-        kubectl --context=$context patch deployment -n rook-ceph csi-rbdplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/6/image", "value": "quay.io/csiaddons/k8s-sidecar:v0.11.0"}]' || true
+        # csi-rbdplugin-provisioner: log-collector (by name)
+        echo -e "${YELLOW}Patching CSI RBD provisioner log-collector in $context...${NC}"
+        patch_container "$context" deployment csi-rbdplugin-provisioner rook-ceph \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"log-collector","image":"alpine:3.19","command":["sh","-c"],"args":["while true; do sleep 3600; done"]}]}}}}'
         
-        echo -e "${YELLOW}Patching CSI CephFS provisioner in $context...${NC}"
-        kubectl --context=$context patch deployment -n rook-ceph csi-cephfsplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/6/image", "value": "quay.io/csiaddons/k8s-sidecar:v0.11.0"}]' || true
+        # csi-cephfsplugin-provisioner: log-collector (by name)
+        echo -e "${YELLOW}Patching CSI CephFS provisioner log-collector in $context...${NC}"
+        patch_container "$context" deployment csi-cephfsplugin-provisioner rook-ceph \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"log-collector","image":"alpine:3.19","command":["sh","-c"],"args":["while true; do sleep 3600; done"]}]}}}}'
         
-        echo -e "${YELLOW}Patching CSI RBD DaemonSet in $context...${NC}"
-        kubectl --context=$context patch daemonset -n rook-ceph csi-rbdplugin \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/3/image", "value": "quay.io/csiaddons/k8s-sidecar:v0.11.0"}]' || true
+        # csi-rbdplugin daemonset: log-collector (by name)
+        echo -e "${YELLOW}Patching CSI RBD DaemonSet log-collector in $context...${NC}"
+        patch_container "$context" daemonset csi-rbdplugin rook-ceph \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"log-collector","image":"alpine:3.19","command":["sh","-c"],"args":["while true; do sleep 3600; done"]}]}}}}'
     done
 }
 

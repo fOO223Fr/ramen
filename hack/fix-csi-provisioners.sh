@@ -5,8 +5,21 @@
 # Fix CSI provisioner deployments after upstream merge
 # Upstream Rook manifests incorrectly configured csi-rbdplugin-provisioner with CephCSI driver
 # This script patches it to use the correct external-provisioner image
+#
+# All patches target containers by NAME (not index) for robustness.
 
 set -e
+
+# Patch container by name using strategic merge
+patch_container() {
+    local context=$1
+    local resource_type=$2
+    local resource_name=$3
+    local namespace=$4
+    local patch_json=$5
+    kubectl --context="$context" patch "$resource_type" "$resource_name" -n "$namespace" \
+        --type='strategic' -p="$patch_json" 2>/dev/null || true
+}
 
 echo "🔧 Applying CSI provisioner fixes for Rook/Ceph compatibility (post-merge)..."
 echo ""
@@ -15,52 +28,37 @@ for context in dr1 dr2; do
     echo "📌 Fixing CSI provisioners on $context cluster..."
     
     # ========== FIX csi-rbdplugin-provisioner ==========
-    # Upstream deploys container 0 (csi-provisioner) with wrong image
-    # Container structure: csi-provisioner(0), csi-resizer(1), csi-attacher(2), csi-snapshotter(3), 
-    #                     csi-omap-generator(4), csi-addons(5), csi-rbdplugin(6), log-collector(7)
-    
     if kubectl --context=$context get deployment -n rook-ceph csi-rbdplugin-provisioner &>/dev/null; then
         echo "  ✓ Patching csi-rbdplugin-provisioner..."
         
-        # Fix container 0 (csi-provisioner) to use correct external-provisioner image instead of CephCSI driver
-        kubectl --context=$context patch deployment -n rook-ceph csi-rbdplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "registry.k8s.io/sig-storage/csi-provisioner:v5.2.0"}]' 2>/dev/null || true
+        # Fix csi-provisioner image (by name)
+        patch_container "$context" deployment csi-rbdplugin-provisioner rook-ceph \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"csi-provisioner","image":"registry.k8s.io/sig-storage/csi-provisioner:v5.2.0"}]}}}}'
         
-        # Ensure log-collector (container 7) has correct initialization
-        kubectl --context=$context patch deployment -n rook-ceph csi-rbdplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/7/command", "value": ["/bin/sh"]}]' 2>/dev/null || true
-        kubectl --context=$context patch deployment -n rook-ceph csi-rbdplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/7/args", "value": ["-c", "while true; do sleep 3600; done"]}]' 2>/dev/null || true
+        # Ensure log-collector has correct initialization (by name)
+        patch_container "$context" deployment csi-rbdplugin-provisioner rook-ceph \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"log-collector","command":["/bin/sh"],"args":["-c","while true; do sleep 3600; done"]}]}}}}'
     fi
     
     # ========== csi-cephfsplugin-provisioner ==========
-    # Upstream has WRONG IMAGES too: csi-attacher uses CephCSI driver instead of external-attacher
-    # Container structure: csi-attacher(0), csi-snapshotter(1), csi-resizer(2), csi-provisioner(3),
-    #                     csi-cephfsplugin(4), csi-addons(5), log-collector(6)
-    
     if kubectl --context=$context get deployment -n rook-ceph csi-cephfsplugin-provisioner &>/dev/null; then
         echo "  ✓ Patching csi-cephfsplugin-provisioner (multiple image fixes)..."
         
-        # Fix container 0 (csi-attacher) - currently wrong CephCSI image
-        kubectl --context=$context patch deployment -n rook-ceph csi-cephfsplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "registry.k8s.io/sig-storage/csi-attacher:v4.8.1"}]' 2>/dev/null || true
+        # Fix csi-attacher image (by name)
+        patch_container "$context" deployment csi-cephfsplugin-provisioner rook-ceph \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"csi-attacher","image":"registry.k8s.io/sig-storage/csi-attacher:v4.8.1"}]}}}}'
         
-        # Fix container 1 (csi-snapshotter) - remove broken "sh" command
-        kubectl --context=$context patch deployment -n rook-ceph csi-cephfsplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "remove", "path": "/spec/template/spec/containers/1/command"}]' 2>/dev/null || true
+        # Fix csi-snapshotter - remove broken "sh" command (by name: get index then json patch)
+        idx=$(kubectl --context=$context get deployment csi-cephfsplugin-provisioner -n rook-ceph -o json 2>/dev/null | \
+            jq -r '[.spec.template.spec.containers[] | .name] | index("csi-snapshotter")' 2>/dev/null || echo "")
+        if [ -n "$idx" ] && [ "$idx" != "null" ]; then
+            kubectl --context=$context patch deployment csi-cephfsplugin-provisioner -n rook-ceph --type='json' \
+                -p="[{\"op\": \"remove\", \"path\": \"/spec/template/spec/containers/$idx/command\"}]" 2>/dev/null || true
+        fi
         
-        # Ensure log-collector (container 6) has correct initialization
-        kubectl --context=$context patch deployment -n rook-ceph csi-cephfsplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/6/command", "value": ["/bin/sh"]}]' 2>/dev/null || true
-        kubectl --context=$context patch deployment -n rook-ceph csi-cephfsplugin-provisioner \
-            --type='json' \
-            -p='[{"op": "replace", "path": "/spec/template/spec/containers/6/args", "value": ["-c", "while true; do sleep 3600; done"]}]' 2>/dev/null || true
+        # Ensure log-collector has correct initialization (by name)
+        patch_container "$context" deployment csi-cephfsplugin-provisioner rook-ceph \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"log-collector","command":["/bin/sh"],"args":["-c","while true; do sleep 3600; done"]}]}}}}'
     fi
     
     # ========== RESTART PROVISIONER PODS ==========

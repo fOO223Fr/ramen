@@ -9,6 +9,4 @@ spec:
       containers:
       - name: csi-addons
         args:
-        - --listen-port=9070
-        - --log-level=5
-        - --enable-auth=false
+        - -controller-port=9070

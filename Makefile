@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: The RamenDR authors
 # SPDX-License-Identifier: Apache-2.0
 
+# Use bash shell for all commands
+SHELL := /bin/bash
+
 # Enable GOPROXY. This speeds up a lot of vendoring operations.
 export GOPROXY=https://proxy.golang.org
 
@@ -149,39 +152,20 @@ destroy-rdr-env: drenv-prereqs ## Destroy the existing rdr environment.
 drenv-prereqs: ## Check the prerequisites for the drenv tool.
 	./hack/check-drenv-prereqs.sh
 
+.PHONY: preload-images
+preload-images: ## Pre-load container images into CSI replication clusters (dr1 dr2). Run after clusters exist.
+	./scripts/preload-images.sh dr1 dr2
+
 .PHONY: setup-csi-replication
 setup-csi-replication: drenv-prereqs venv ## Setup DR clusters with Ceph SDS Storage for CSI Replication testing using rook environment.
-	@echo "Setting up CSI Replication environment using Rook/Ceph-focused setup..."
-	@echo "This creates dr1 + dr2 clusters with Ceph, CSI addons, and RBD mirroring."
-	cd test && source ../venv && drenv setup envs/rook.yaml
-	cd test && source ../venv && drenv start envs/rook.yaml
-	@echo ""
-	@echo "Applying CSI provisioner fixes for Ceph CSI compatibility..."
-	$(MAKE) fix-csi-provisioners
-	@echo ""
-	@echo "Updating CSI Addons to compatible versions..."
-	$(MAKE) fix-csi-addons-versions
-	@echo ""
-	@echo "Setting up storage classes and replication classes..."
-	$(MAKE) setup-csi-storage-resources
-	@echo ""
-	@echo "Setting up RBD mirroring between clusters..."
-	$(MAKE) setup-rbd-mirroring
-	@echo ""
-	@echo "🎉 Setup complete! Your clusters are ready for CSI replication testing."
-	@echo "Available resources:"
-	@echo "  - Storage Classes: rook-ceph-block, rook-ceph-block-2"  
-	@echo "  - Volume Replication Classes: rbd-volumereplicationclass, rbd-volumereplicationclass-5m"
-	@echo "  - RBD Pools: replicapool, replicapool-2"
-	@echo ""
-	@echo "Access clusters with: kubectl --context=dr1|dr2 get nodes"
-	@echo "Test replication with: bash test/test-csi-replication.sh"
+	./scripts/setup-csi-replication.sh
 
 .PHONY: stop-csi-replication  
 stop-csi-replication: venv ## Stop CSI Replication clusters (keep VMs).
 	@echo "Cleaning up old replicated images from both clusters..."
-	@./scripts/cleanup-replicated-images.sh
+	-./scripts/cleanup-replicated-images.sh
 	cd test && source ../venv && drenv stop envs/rook.yaml
+	@echo "✅ CSI replication clusters stopped successfully"
 
 .PHONY: start-csi-replication
 start-csi-replication: venv ## Start existing CSI Replication clusters.
@@ -193,14 +177,16 @@ start-csi-replication: venv ## Start existing CSI Replication clusters.
 		exit 1; \
 	fi
 	cd test && source ../venv && drenv start envs/rook.yaml
+	@echo "Waiting for basic cluster readiness..."
+	kubectl --context=dr1 wait --for=condition=Ready nodes --all --timeout=300s
+	kubectl --context=dr2 wait --for=condition=Ready nodes --all --timeout=300s
 	@echo "Waiting for CSI components to be deployed by Rook..."
-	@# Wait for CSI deployments to exist (created by Rook operator)
 	@echo "  Waiting for CSI deployments on dr1..."
-	@kubectl --context=dr1 wait --for=condition=available deployment/csi-rbdplugin-provisioner -n rook-ceph --timeout=300s || true
-	@kubectl --context=dr1 wait --for=condition=available deployment/csi-cephfsplugin-provisioner -n rook-ceph --timeout=300s || true
+	-kubectl --context=dr1 wait --for=condition=available deployment/csi-rbdplugin-provisioner -n rook-ceph --timeout=300s
+	-kubectl --context=dr1 wait --for=condition=available deployment/csi-cephfsplugin-provisioner -n rook-ceph --timeout=300s
 	@echo "  Waiting for CSI deployments on dr2..."
-	@kubectl --context=dr2 wait --for=condition=available deployment/csi-rbdplugin-provisioner -n rook-ceph --timeout=300s || true
-	@kubectl --context=dr2 wait --for=condition=available deployment/csi-cephfsplugin-provisioner -n rook-ceph --timeout=300s || true
+	-kubectl --context=dr2 wait --for=condition=available deployment/csi-rbdplugin-provisioner -n rook-ceph --timeout=300s
+	-kubectl --context=dr2 wait --for=condition=available deployment/csi-cephfsplugin-provisioner -n rook-ceph --timeout=300s
 	@echo "Applying post-start configuration fixes..."
 	$(MAKE) setup-csi-storage-resources
 	@echo "✅ CSI replication clusters started and configured successfully"
@@ -209,16 +195,32 @@ start-csi-replication: venv ## Start existing CSI Replication clusters.
 cleanup-replicated-images: ## Clean up old replicated images from both CSI clusters.
 	@./scripts/cleanup-replicated-images.sh
 
+.PHONY: reset-csi-replication  
+reset-csi-replication: ## Reset CSI Replication environment for clean setup (delete + cleanup).
+	@echo "Resetting CSI Replication environment..."
+	-$(MAKE) delete-csi-replication 2>/dev/null || true
+	@echo "Cleaning up any remaining minikube profiles..."
+	-minikube delete --profile=dr1 2>/dev/null || true
+	-minikube delete --profile=dr2 2>/dev/null || true
+	@echo "Cleaning up any remaining docker containers..."
+	-docker container prune -f 2>/dev/null || true
+	@echo "✅ Environment reset complete. Ready for fresh setup."
+
 .PHONY: fix-csi-provisioners
 fix-csi-provisioners: ## Apply container image and flag format fixes to CSI provisioner deployments (required for Ceph CSI compatibility).
-	bash hack/fix-csi-provisioners.sh
+	./scripts/fix-csi-provisioners.sh
 
 .PHONY: fix-csi-addons-versions
 fix-csi-addons-versions: ## Update CSI Addons controller and sidecar to compatible official versions (required for gRPC connectivity).
-	@echo "Updating CSI Addons to official compatible versions..."
-	@bash hack/fix-csi-addons-versions.sh dr1
-	@bash hack/fix-csi-addons-versions.sh dr2
-	@echo "✓ CSI Addons versions updated on both clusters"
+	./scripts/fix-csi-addons-versions.sh
+
+.PHONY: setup-csi-storage-resources
+setup-csi-storage-resources: ## Setup storage classes, pools, and volume replication classes on both clusters.
+	./scripts/setup-csi-storage-resources.sh
+
+.PHONY: setup-rbd-mirroring
+setup-rbd-mirroring: ## Setup RBD mirroring between dr1 and dr2 clusters.
+	./scripts/setup-rbd-mirroring.sh
 
 .PHONY: fix-rook-operator-images
 fix-rook-operator-images: ## Update Rook operator to use quay.io images instead of docker.io (fixes image pull timeouts).
@@ -260,159 +262,52 @@ fix-snapshot-controller-images: ## Fix snapshot-controller to use working image 
 
 .PHONY: fix-csi-addons-tls
 fix-csi-addons-tls: ## Apply TLS configuration fix to CSI Addons controllers and sidecars.
-	@echo "Disabling TLS authentication in CSI Addons controllers and sidecars (required for Ceph CSI sidecar compatibility)..."
-	@# Apply fix to dr1 cluster
-	@if kubectl --context=dr1 get deployment -n csi-addons-system csi-addons-controller-manager >/dev/null 2>&1; then \
-		kubectl --context=dr1 patch deployment -n csi-addons-system csi-addons-controller-manager \
-			--type='json' \
-			-p='[{"op": "add", "path": "/spec/template/spec/containers/0/args", "value": ["--enable-auth=false"]}]' && \
-		kubectl --context=dr1 patch deployment -n csi-addons-system csi-addons-controller-manager \
-			--type='json' \
-			-p='[{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "NODE_ID", "value": "dr1"}}]' && \
-		echo "✓ TLS fix and NODE_ID applied to dr1 CSI Addons controller"; \
-	else \
-		echo "⚠ CSI Addons controller not found in dr1 cluster"; \
-	fi
-	@# Fix CSI sidecar containers on dr1
-	@echo "Fixing CSI sidecar TLS on dr1..."
-	@if ! kubectl --context=dr1 get deployment csi-rbdplugin-provisioner -n rook-ceph -o jsonpath='{.spec.template.spec.containers[5].args}' | grep -q -- "--enable-auth=false"; then \
-		kubectl --context=dr1 patch deployment csi-rbdplugin-provisioner -n rook-ceph --type='json' -p='[{"op": "replace","path": "/spec/template/spec/containers/5/args","value": ["--listen-port=9070","--log-level=5","--enable-auth=false"]}]'; \
-	fi
-	@if ! kubectl --context=dr1 get deployment csi-cephfsplugin-provisioner -n rook-ceph -o jsonpath='{.spec.template.spec.containers[3].args}' | grep -q -- "--enable-auth=false"; then \
-		kubectl --context=dr1 patch deployment csi-cephfsplugin-provisioner -n rook-ceph --type='json' -p='[{"op": "replace","path": "/spec/template/spec/containers/3/args","value": ["--listen-port=9070","--log-level=5","--enable-auth=false"]}]'; \
-	fi
-	@if ! kubectl --context=dr1 get daemonset csi-rbdplugin -n rook-ceph -o jsonpath='{.spec.template.spec.containers[3].args}' | grep -q -- "--enable-auth=false"; then \
-		kubectl --context=dr1 patch daemonset csi-rbdplugin -n rook-ceph --type='json' -p='[{"op": "replace","path": "/spec/template/spec/containers/3/args","value": ["--listen-port=9070","--log-level=5","--enable-auth=false"]}]'; \
-	fi
-	@if ! kubectl --context=dr1 get daemonset csi-cephfsplugin -n rook-ceph -o jsonpath='{.spec.template.spec.containers[2].args}' | grep -q -- "--enable-auth=false"; then \
-		kubectl --context=dr1 patch daemonset csi-cephfsplugin -n rook-ceph --type='json' -p='[{"op": "replace","path": "/spec/template/spec/containers/2/args","value": ["--listen-port=9070","--log-level=5","--enable-auth=false"]}]'; \
-	fi
-	@# Apply fix to dr2 cluster
-	@if kubectl --context=dr2 get deployment -n csi-addons-system csi-addons-controller-manager >/dev/null 2>&1; then \
-		kubectl --context=dr2 patch deployment -n csi-addons-system csi-addons-controller-manager \
-			--type='json' \
-			-p='[{"op": "add", "path": "/spec/template/spec/containers/0/args", "value": ["--enable-auth=false"]}]' && \
-		kubectl --context=dr2 patch deployment -n csi-addons-system csi-addons-controller-manager \
-			--type='json' \
-			-p='[{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "NODE_ID", "value": "dr2"}}]' && \
-		echo "✓ TLS fix and NODE_ID applied to dr2 CSI Addons controller"; \
-	else \
-		echo "⚠ CSI Addons controller not found in dr2 cluster"; \
-	fi
-	@# Fix CSI sidecar containers on dr2
-	@echo "Fixing CSI sidecar TLS on dr2..."
-	@if ! kubectl --context=dr2 get deployment csi-rbdplugin-provisioner -n rook-ceph -o jsonpath='{.spec.template.spec.containers[5].args}' | grep -q -- "--enable-auth=false"; then \
-		kubectl --context=dr2 patch deployment csi-rbdplugin-provisioner -n rook-ceph --type='json' -p='[{"op": "replace","path": "/spec/template/spec/containers/5/args","value": ["--listen-port=9070","--log-level=5","--enable-auth=false"]}]'; \
-	fi
-	@if ! kubectl --context=dr2 get deployment csi-cephfsplugin-provisioner -n rook-ceph -o jsonpath='{.spec.template.spec.containers[3].args}' | grep -q -- "--enable-auth=false"; then \
-		kubectl --context=dr2 patch deployment csi-cephfsplugin-provisioner -n rook-ceph --type='json' -p='[{"op": "replace","path": "/spec/template/spec/containers/3/args","value": ["--listen-port=9070","--log-level=5","--enable-auth=false"]}]'; \
-	fi
-	@if ! kubectl --context=dr2 get daemonset csi-rbdplugin -n rook-ceph -o jsonpath='{.spec.template.spec.containers[3].args}' | grep -q -- "--enable-auth=false"; then \
-		kubectl --context=dr2 patch daemonset csi-rbdplugin -n rook-ceph --type='json' -p='[{"op": "replace","path": "/spec/template/spec/containers/3/args","value": ["--listen-port=9070","--log-level=5","--enable-auth=false"]}]'; \
-	fi
-	@if ! kubectl --context=dr2 get daemonset csi-cephfsplugin -n rook-ceph -o jsonpath='{.spec.template.spec.containers[2].args}' | grep -q -- "--enable-auth=false"; then \
-		kubectl --context=dr2 patch daemonset csi-cephfsplugin -n rook-ceph --type='json' -p='[{"op": "replace","path": "/spec/template/spec/containers/2/args","value": ["--listen-port=9070","--log-level=5","--enable-auth=false"]}]'; \
-	fi
-	@# Wait for rollouts to complete
-	@echo "Waiting for CSI Addons controllers to restart..."
-	@kubectl --context=dr1 rollout status deployment/csi-addons-controller-manager -n csi-addons-system --timeout=60s || true
-	@kubectl --context=dr2 rollout status deployment/csi-addons-controller-manager -n csi-addons-system --timeout=60s || true
-	@echo "Cleaning up problematic CSIAddonsNode resources to force reconnection..."
-	@# Clean up failed CSIAddonsNode resources on dr1
-	@if kubectl --context=dr1 get csiaddonsnode -n rook-ceph >/dev/null 2>&1; then \
-		kubectl --context=dr1 delete csiaddonsnode -n rook-ceph --all --ignore-not-found=true; \
-	fi
-	@# Clean up failed CSIAddonsNode resources on dr2
-	@if kubectl --context=dr2 get csiaddonsnode -n rook-ceph >/dev/null 2>&1; then \
-		kubectl --context=dr2 delete csiaddonsnode -n rook-ceph --all --ignore-not-found=true; \
-	fi
-	@echo "Restarting problematic CSI provisioner pods to establish fresh connections..."
-	@# Restart failing rbdplugin-provisioner pods on dr1
-	@if kubectl --context=dr1 get pods -n rook-ceph -l app=csi-rbdplugin-provisioner >/dev/null 2>&1; then \
-		kubectl --context=dr1 delete pods -n rook-ceph -l app=csi-rbdplugin-provisioner --ignore-not-found=true; \
-		echo "✓ Restarted rbdplugin-provisioner pods on dr1"; \
-	fi
-	@# Restart failing rbdplugin-provisioner pods on dr2
-	@if kubectl --context=dr2 get pods -n rook-ceph -l app=csi-rbdplugin-provisioner >/dev/null 2>&1; then \
-		kubectl --context=dr2 delete pods -n rook-ceph -l app=csi-rbdplugin-provisioner --ignore-not-found=true; \
-		echo "✓ Restarted rbdplugin-provisioner pods on dr2"; \
-	fi
-	@echo "CSI Addons TLS configuration and NODE_ID fixes completed."
-
-.PHONY: setup-csi-storage-resources
-setup-csi-storage-resources: ## Setup storage classes, pools, and volume replication classes on both clusters.
-	@echo "Creating RBD storage classes and pools on both clusters..."
-	@# Setup rook-pool addon on dr1
-	source ./venv && cd test/addons/rook-pool && ./start dr1
-	@echo "✓ Storage resources created on dr1"
-	@# Setup rook-pool addon on dr2  
-	source ./venv && cd test/addons/rook-pool && ./start dr2
-	@echo "✓ Storage resources created on dr2"
-	@echo ""
-	@echo "Creating Volume Replication Classes on both clusters..."
-	@# Create VolumeReplicationClass resources on dr1
-	kubectl --context=dr1 apply -f test/yaml/objects/volume-replication-class.yaml
-	@echo "✓ Volume Replication Classes created on dr1"
-	@# Create VolumeReplicationClass resources on dr2
-	kubectl --context=dr2 apply -f test/yaml/objects/volume-replication-class.yaml  
-	@echo "✓ Volume Replication Classes created on dr2"
-	@echo ""
-	@echo "Verifying storage setup..."
-	@echo "DR1 Storage Classes:"
-	@kubectl --context=dr1 get storageclass | grep rook-ceph || echo "  No Ceph storage classes found"
-	@echo "DR1 Volume Replication Classes:"
-	@kubectl --context=dr1 get volumereplicationclass || echo "  No volume replication classes found"
-	@echo "DR2 Storage Classes:" 
-	@kubectl --context=dr2 get storageclass | grep rook-ceph || echo "  No Ceph storage classes found"
-	@echo "DR2 Volume Replication Classes:"
-	@kubectl --context=dr2 get volumereplicationclass || echo "  No volume replication classes found"
-
-.PHONY: setup-rbd-mirroring
-setup-rbd-mirroring: ## Setup RBD mirroring between dr1 and dr2 clusters.
-	@echo "Ensuring Ceph toolbox is available on both clusters..."
-	@# Deploy rook-ceph-tools if not already present
-	@kubectl --context=dr1 -n rook-ceph get deployment rook-ceph-tools >/dev/null 2>&1 || \
-		(source ./venv && cd test/addons/rook-toolbox && ./start dr1)
-	@kubectl --context=dr2 -n rook-ceph get deployment rook-ceph-tools >/dev/null 2>&1 || \
-		(source ./venv && cd test/addons/rook-toolbox && ./start dr2)
-	@echo "✓ Ceph toolbox available on both clusters"
-	@echo ""
-	@echo "Ensuring Ceph clusters are deployed on both dr1 and dr2..."
-	@# Check if CephCluster exists on dr2, deploy if missing
-	@if ! kubectl --context=dr2 -n rook-ceph get cephcluster my-cluster >/dev/null 2>&1; then \
-		echo "⚠ CephCluster not found on dr2, deploying..."; \
-		source ./venv && cd test/addons/rook-cluster && ./start dr2; \
-		source ./venv && cd test/addons/rook-pool && ./start dr2; \
-		source ./venv && cd test/addons/rook-toolbox && ./start dr2; \
-		echo "✓ Ceph cluster deployed on dr2"; \
-	else \
-		echo "✓ Ceph clusters exist on both dr1 and dr2"; \
-	fi
-	@echo ""
-	@echo "Configuring RBD mirroring between dr1 and dr2 clusters..."
-	@# Run the rbd-mirror addon to establish cross-cluster mirroring
-	source ./venv && cd test/addons/rbd-mirror && ./start dr1 dr2
-	@echo "✓ RBD mirroring configured between clusters"
-	@echo ""
-	@echo "Waiting for RBD mirror daemons to be ready..."
-	@# Wait for mirror daemons on both clusters
-	@kubectl --context=dr1 -n rook-ceph wait --for=condition=Ready pod -l app=rook-ceph-rbd-mirror --timeout=180s || echo "⚠ DR1 mirror daemon not ready yet"
-	@kubectl --context=dr2 -n rook-ceph wait --for=condition=Ready pod -l app=rook-ceph-rbd-mirror --timeout=180s || echo "⚠ DR2 mirror daemon not ready yet" 
-	@echo "✓ RBD mirror daemons ready"
+	./scripts/fix-csi-addons-tls.sh
 
 .PHONY: delete-csi-replication
 delete-csi-replication: venv ## Delete CSI Replication clusters completely.
+	@echo "Cleaning up old replicated images from both clusters..."
+	-./scripts/cleanup-replicated-images.sh
+	@echo "Deleting CSI Replication environment..."
 	cd test && source ../venv && drenv delete envs/rook.yaml
+	@echo "✅ CSI Replication environment deleted successfully"
+	@echo "Note: Local registry is preserved for faster future setups. Use 'make clean-local-registry' to remove it."
+
+.PHONY: clean-local-registry
+clean-local-registry: ## Clean up local Docker registry used for CSI replication.
+	./scripts/cleanup-local-registry.sh
+
+.PHONY: clean-pvc-vr
+clean-pvc-vr: ## Clean all VolumeReplications and PVCs for fresh CSI replication testing.
+	./scripts/cleanup-pvc-vr.sh -y
 
 .PHONY: status-csi-replication
 status-csi-replication: ## Check status of CSI Replication clusters.
 	@echo "Checking cluster contexts..."
 	@kubectl config get-contexts | grep -E "(dr1|dr2)" || echo "No CSI replication clusters found"
 
+.PHONY: logs-csi-replication
+logs-csi-replication: ## View recent CSI replication logs.
+	@echo "Recent CSI replication logs (last 10 files):"
+	@if [ -d Logs ]; then \
+		ls -lt Logs/setup-csi-replication-*.log Logs/start-csi-replication-*.log Logs/stop-csi-replication-*.log Logs/delete-csi-replication-*.log Logs/test-*.log 2>/dev/null | head -10 || echo "No log files found"; \
+		echo ""; \
+		echo "To view a specific log file: tail -f Logs/<filename>"; \
+		echo "To view all setup logs: ls Logs/setup-*"; \
+		echo "To view all test logs: ls Logs/test-*"; \
+	else \
+		echo "No Logs directory found. Logs will be created when running targets."; \
+	fi
+
+.PHONY: verify-snapshot-controller
+verify-snapshot-controller: ## Verify and fix snapshot-controller image issues in CSI clusters.
+	@echo "Verifying snapshot-controller images in CSI clusters..."
+	./scripts/verify-snapshot-controller.sh dr1 dr2
+
 .PHONY: test-csi-replication
 test-csi-replication: ## Run CSI replication functionality test.
 	@echo "Running CSI replication test..."
-	bash test/test-csi-replication.sh
+	test/test-csi-replication.sh
 
 .PHONY: test-csi-failover
 test-csi-failover: ## Run CSI volume replication failover test (demote/promote flow).
@@ -424,7 +319,7 @@ test-csi-failover: ## Run CSI volume replication failover test (demote/promote f
 	@echo "  4. Shows detailed status before/after each operation"
 	@echo "Expected duration: 2-3 minutes"
 	@echo ""
-	bash test/test-csi-failover.sh
+	test/test-csi-failover.sh
 
 .PHONY: test-dr-flow
 test-dr-flow: ## Run complete DR failover flow test with K8s object recreation on DR2.
@@ -440,7 +335,7 @@ test-dr-flow: ## Run complete DR failover flow test with K8s object recreation o
 	@mkdir -p test/Logs
 	@LOGFILE="test/Logs/test-dr-flow-$$(date +%Y%m%d-%H%M%S).log"; \
 	echo "Logging output to $$LOGFILE"; \
-	bash test/test-dr-flow.sh 2>&1 | tee $$LOGFILE; \
+	test/test-dr-flow.sh 2>&1 | tee $$LOGFILE; \
 	echo ""; \
 	echo "Log saved to $$LOGFILE"
 
