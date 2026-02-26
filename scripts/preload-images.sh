@@ -55,6 +55,11 @@ declare -a MINIKUBE_ADDON_IMAGES=(
     "gcr.io/k8s-minikube/kube-registry-proxy:0.0.9"
 )
 
+# E2E test images
+declare -a E2E_TEST_IMAGES=(
+    "registry.k8s.io/e2e-test-images/busybox:1.37.0-1"
+)
+
 # Standard substitutes for custom images (use official versions)
 declare -a SUBSTITUTE_IMAGES=(
     "quay.io/csiaddons/k8s-controller:latest"
@@ -90,7 +95,7 @@ pre_pull_images() {
     log_info "Pre-pulling required images in parallel to avoid network issues during cluster setup..."
     
     # Combine all required images
-    ALL_IMAGES=("${ROOK_IMAGES[@]}" "${CSI_IMAGES[@]}" "${CSI_ADDONS_IMAGES[@]}" "${MINIKUBE_ADDON_IMAGES[@]}" "${SUBSTITUTE_IMAGES[@]}")
+    ALL_IMAGES=("${ROOK_IMAGES[@]}" "${CSI_IMAGES[@]}" "${CSI_ADDONS_IMAGES[@]}" "${MINIKUBE_ADDON_IMAGES[@]}" "${SUBSTITUTE_IMAGES[@]}" "${E2E_TEST_IMAGES[@]}")
     
     local need_pulling=()
     local total_count=${#ALL_IMAGES[@]}
@@ -172,7 +177,7 @@ load_images_to_cluster() {
     log_info "Loading images into $profile cluster..."
     
     # Combine all required images including substitutes
-    ALL_IMAGES=("${ROOK_IMAGES[@]}" "${CSI_IMAGES[@]}" "${CSI_ADDONS_IMAGES[@]}" "${SUBSTITUTE_IMAGES[@]}")
+    ALL_IMAGES=("${ROOK_IMAGES[@]}" "${CSI_IMAGES[@]}" "${CSI_ADDONS_IMAGES[@]}" "${SUBSTITUTE_IMAGES[@]}" "${E2E_TEST_IMAGES[@]}")
     
     local loaded_count=0
     local failed_images=()
