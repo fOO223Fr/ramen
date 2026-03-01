@@ -38,6 +38,7 @@ config/hub/bundle
 # Generated files
 .venv
 venv
+Logs/
 
 # Test enviromemnt generated files
 test/.coverage

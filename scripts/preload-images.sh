@@ -22,6 +22,24 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# Detect container runtime (docker or podman)
+# minikube image load requires images in host's container runtime - must match what setup uses
+# PREFER_DOCKER=1 when invoked from setup - ensures consistency with setup's docker-based registry
+CONTAINER_RUNTIME=""
+if [ "${PREFER_DOCKER:-0}" = "1" ] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="docker"
+    log_info "Using docker (PREFER_DOCKER=1 for consistency with setup)"
+elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="docker"
+    log_info "Using docker as container runtime"
+elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="podman"
+    log_info "Using podman as container runtime (docker not available)"
+else
+    log_error "Neither docker nor podman is available and responsive"
+    exit 1
+fi
+
 # Define required images for Rook/Ceph and CSI
 declare -a ROOK_IMAGES=(
     "quay.io/rook/ceph:v1.18.9"
@@ -43,16 +61,16 @@ declare -a CSI_IMAGES=(
 declare -a CSI_ADDONS_IMAGES=(
     "quay.io/csiaddons/k8s-controller:latest"
     "quay.io/csiaddons/k8s-sidecar:v0.11.0"
+    "quay.io/nladha/csiaddons-controller:cg"
     "alpine:3.19"
     "gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0"
     "quay.io/cephcsi/cephcsi:v3.11.0"
     "quay.io/cephcsi/cephcsi:v3.15.0"
 )
 
-# Minikube addon images
+# Minikube addon images (only essential ones)
 declare -a MINIKUBE_ADDON_IMAGES=(
     "docker.io/registry:3.0.0"
-    "gcr.io/k8s-minikube/kube-registry-proxy:0.0.9"
 )
 
 # E2E test images
@@ -60,34 +78,18 @@ declare -a E2E_TEST_IMAGES=(
     "registry.k8s.io/e2e-test-images/busybox:1.37.0-1"
 )
 
-# Standard substitutes for custom images (use official versions)
-declare -a SUBSTITUTE_IMAGES=(
-    "quay.io/csiaddons/k8s-controller:latest"
-    "quay.io/csiaddons/k8s-sidecar:v0.11.0"
-)
-
 # Function to check if Docker image exists locally
 image_exists_locally() {
     local image=$1
-    docker image inspect "$image" >/dev/null 2>&1
+    $CONTAINER_RUNTIME image inspect "$image" >/dev/null 2>&1
 }
 
-# Function to create image tags for custom/problematic images
-handle_custom_images() {
-    local profile=$1
-    log_info "Creating substitute tags for custom images in $profile..."
-    
-    # Tag standard images as substitutes for custom ones
-    for i in "${!CUSTOM_IMAGES[@]}"; do
-        local custom_image="${CUSTOM_IMAGES[$i]}"
-        local substitute_image="${SUBSTITUTE_IMAGES[$i]}"
-        
-        if minikube ssh --profile="$profile" -- "docker tag $substitute_image $custom_image" >/dev/null 2>&1; then
-            log_success "✓ Tagged $substitute_image as $custom_image in $profile"
-        else
-            log_warning "✗ Failed to tag substitute for $custom_image in $profile"
-        fi
-    done
+# Function to check if image exists in minikube cluster
+image_exists_in_minikube() {
+    local image=$1
+    local profile=$2
+    # Add timeout to prevent hanging
+    timeout 30s minikube image ls --profile="$profile" 2>/dev/null | grep -F "$image" >/dev/null
 }
 
 # Function to pre-pull images in parallel
@@ -95,7 +97,7 @@ pre_pull_images() {
     log_info "Pre-pulling required images in parallel to avoid network issues during cluster setup..."
     
     # Combine all required images
-    ALL_IMAGES=("${ROOK_IMAGES[@]}" "${CSI_IMAGES[@]}" "${CSI_ADDONS_IMAGES[@]}" "${MINIKUBE_ADDON_IMAGES[@]}" "${SUBSTITUTE_IMAGES[@]}" "${E2E_TEST_IMAGES[@]}")
+    ALL_IMAGES=("${ROOK_IMAGES[@]}" "${CSI_IMAGES[@]}" "${CSI_ADDONS_IMAGES[@]}" "${MINIKUBE_ADDON_IMAGES[@]}" "${E2E_TEST_IMAGES[@]}")
     
     local need_pulling=()
     local total_count=${#ALL_IMAGES[@]}
@@ -132,10 +134,27 @@ pre_pull_images() {
             
             log_info "Pulling: $image"
             (
-                if docker pull "$image" >/dev/null 2>&1; then
-                    echo "PULL_SUCCESS:$image"
+                # Force pull for registry.k8s.io images to avoid cache issues
+                if [[ "$image" == *"registry.k8s.io"* ]]; then
+                    if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
+                        if $CONTAINER_RUNTIME pull --tls-verify=false "$image" >/dev/null 2>&1; then
+                            echo "PULL_SUCCESS:$image"
+                        else
+                            echo "PULL_FAILED:$image"
+                        fi
+                    else
+                        if $CONTAINER_RUNTIME pull "$image" >/dev/null 2>&1; then
+                            echo "PULL_SUCCESS:$image"
+                        else
+                            echo "PULL_FAILED:$image"
+                        fi
+                    fi
                 else
-                    echo "PULL_FAILED:$image"
+                    if $CONTAINER_RUNTIME pull "$image" >/dev/null 2>&1; then
+                        echo "PULL_SUCCESS:$image"
+                    else
+                        echo "PULL_FAILED:$image"
+                    fi
                 fi
             ) &
             pids+=($!)
@@ -150,7 +169,7 @@ pre_pull_images() {
         for image in "${batch_images[@]}"; do
             if image_exists_locally "$image"; then
                 log_success "✓ Successfully pulled: $image"
-                ((pulled_count++))
+                pulled_count=$((pulled_count + 1))
             else
                 log_error "✗ Failed to pull: $image"
                 failed_pulls+=("$image")
@@ -176,63 +195,144 @@ load_images_to_cluster() {
     local profile=$1
     log_info "Loading images into $profile cluster..."
     
-    # Combine all required images including substitutes
-    ALL_IMAGES=("${ROOK_IMAGES[@]}" "${CSI_IMAGES[@]}" "${CSI_ADDONS_IMAGES[@]}" "${SUBSTITUTE_IMAGES[@]}" "${E2E_TEST_IMAGES[@]}")
+    # Combine all required images
+    ALL_IMAGES=("${ROOK_IMAGES[@]}" "${CSI_IMAGES[@]}" "${CSI_ADDONS_IMAGES[@]}" "${E2E_TEST_IMAGES[@]}")
     
     local loaded_count=0
     local failed_images=()
     
-    # Load images in parallel batches of 5
-    local batch_size=5
-    local total_images=${#ALL_IMAGES[@]}
+    # Get cluster image list once to avoid repeated calls
+    log_info "Getting current image list from $profile cluster..."
+    local cluster_images
+    cluster_images=$(timeout 60s minikube image ls --profile="$profile" 2>/dev/null || echo "")
     
-    for ((i=0; i<$total_images; i+=batch_size)); do
-        local pids=()
+    local images_to_load=()
+    if [ -z "$cluster_images" ]; then
+        log_warning "Failed to get image list from $profile cluster, will load all images"
+        images_to_load=("${ALL_IMAGES[@]}")
+    else
+        # Check which images are missing (simplified to avoid hanging)
+        for image in "${ALL_IMAGES[@]}"; do
+            if ! echo "$cluster_images" | grep -q "$image"; then
+                images_to_load+=("$image")
+            fi
+        done
+    fi
+    
+    if [ ${#images_to_load[@]} -eq 0 ]; then
+        log_success "All images already loaded in $profile cluster"
+        return 0
+    fi
+    
+    log_info "Loading ${#images_to_load[@]} missing images into $profile cluster"
+    
+    local total_images=${#images_to_load[@]}
+    local batch_size=3  # Smaller batch size to avoid hanging
+    
+    # Process images in batches
+    for ((i=0; i<total_images; i+=batch_size)); do
         local batch_images=()
+        local pids=()
+        local batch_id="${profile}_${i}_$$"
+        local tmpdir="/tmp/preload_batch_${batch_id}"
+        mkdir -p "$tmpdir"
         
-        # Start batch
+        log_info "Processing batch $((i/batch_size + 1))/$((($total_images + batch_size - 1) / batch_size)) for $profile..."
+        
+        # Start batch processes
+        local batch_start_idx=$i
         for ((j=i; j<i+batch_size && j<total_images; j++)); do
-            local image="${ALL_IMAGES[$j]}"
+            local image="${images_to_load[$j]}"
             batch_images+=("$image")
             
-            # Load image in background
+            # Use unique index based on position in batch
+            local batch_idx=$((j - batch_start_idx))
             (
-                if minikube image load "$image" --profile="$profile" >/dev/null 2>&1; then
-                    echo "SUCCESS:$image"
+                local result_file="$tmpdir/result_${batch_idx}"
+                log_info "Loading: $image"
+                
+                # Try standard load first
+                if timeout 90s minikube image load "$image" --profile="$profile" >/dev/null 2>&1; then
+                    echo "SUCCESS" > "$result_file"
                 else
-                    echo "FAILED:$image"
+                    # Try alternative tar method for failed images  
+                    log_warning "Standard load failed for $image, trying tar method..."
+                    local tar_file="/tmp/img_${batch_id}_${batch_idx}.tar"
+                    if timeout 60s $CONTAINER_RUNTIME save "$image" -o "$tar_file" 2>/dev/null && \
+                       timeout 60s minikube image load "$tar_file" --profile="$profile" >/dev/null 2>&1; then
+                        echo "SUCCESS" > "$result_file"
+                    else
+                        echo "FAILED" > "$result_file"
+                    fi
+                    rm -f "$tar_file" 2>/dev/null || true
                 fi
             ) &
             pids+=($!)
         done
         
-        # Wait for batch to complete and collect results
+        # Wait for batch completion with timeout
+        log_info "Waiting for batch processes to complete..."
+        local wait_timeout=180
+        local wait_start=$(date +%s)
+        local completed=0
+        
         for pid in "${pids[@]}"; do
-            wait $pid
+            local current_time=$(date +%s)
+            local elapsed=$((current_time - wait_start))
+            
+            if [ $elapsed -ge $wait_timeout ]; then
+                log_warning "Batch timeout exceeded ($wait_timeout seconds), killing remaining processes..."
+                kill "${pids[@]}" 2>/dev/null || true
+                sleep 2
+                kill -9 "${pids[@]}" 2>/dev/null || true
+                break
+            fi
+            
+            if wait $pid 2>/dev/null; then
+                completed=$((completed + 1))
+            else
+                log_warning "Process $pid completed with error or was terminated"
+            fi
         done
         
-        # Process results
-        for image in "${batch_images[@]}"; do
-            if image_exists_locally "$image"; then
-                log_success "✓ Available for $profile: $image"
-                ((loaded_count++))
+        log_info "Batch processes completed: $completed/${#pids[@]}"
+        
+        # Collect results
+        for ((j=0; j<${#batch_images[@]}; j++)); do
+            local image="${batch_images[$j]}"
+            local result_file="$tmpdir/result_${j}"
+            if [ -f "$result_file" ] && [ "$(cat "$result_file" 2>/dev/null)" = "SUCCESS" ]; then
+                log_success "✓ Loaded: $image"
+                loaded_count=$((loaded_count + 1))
             else
-                log_warning "✗ Missing for $profile: $image"
+                log_error "✗ Failed to load: $image"
                 failed_images+=("$image")
             fi
         done
         
-        log_info "Batch completed for $profile: ${#batch_images[@]} images processed"
+        # Clean up temp directory
+        rm -rf "$tmpdir" 2>/dev/null || true
+        
+        log_info "Batch $((i/batch_size + 1)) completed for $profile: ${#batch_images[@]} images processed"
+        
+        # Small delay between batches
+        if [ $((i + batch_size)) -lt $total_images ]; then
+            sleep 2
+        fi
     done
     
+    # Summary
+    local total_attempted=${#images_to_load[@]}
+    log_success "Image loading completed for $profile cluster:"
+    log_success "  ✓ Successfully loaded: $loaded_count images"
     if [ ${#failed_images[@]} -gt 0 ]; then
-        log_warning "Failed to load ${#failed_images[@]} images into $profile:"
+        log_warning "  ✗ Failed to load: ${#failed_images[@]} images"
         for image in "${failed_images[@]}"; do
-            log_warning "  - $image"
+            log_warning "    - $image"
         done
     fi
     
-    log_success "Processed $loaded_count/${total_images} images for $profile cluster"
+    return 0
 }
 
 # Function to verify images are loaded in clusters
@@ -240,7 +340,7 @@ verify_images_in_cluster() {
     local profile=$1
     log_info "Verifying images in $profile cluster..."
     
-    local available_count=$(minikube image ls --profile="$profile" 2>/dev/null | wc -l)
+    local available_count=$(timeout 30s minikube image ls --profile="$profile" 2>/dev/null | wc -l || echo "0")
     log_info "Found $available_count total images in $profile cluster"
     
     # Check for specific required images
@@ -248,14 +348,14 @@ verify_images_in_cluster() {
     local csi_images_found=0
     
     for image in "${ROOK_IMAGES[@]}"; do
-        if minikube image ls --profile="$profile" 2>/dev/null | grep -q "$image"; then
-            ((rook_images_found++))
+        if timeout 20s minikube image ls --profile="$profile" 2>/dev/null | grep -q "$image"; then
+            rook_images_found=$((rook_images_found + 1))
         fi
     done
     
     for image in "${CSI_IMAGES[@]}"; do
-        if minikube image ls --profile="$profile" 2>/dev/null | grep -q "$image"; then
-            ((csi_images_found++))
+        if timeout 20s minikube image ls --profile="$profile" 2>/dev/null | grep -q "$image"; then
+            csi_images_found=$((csi_images_found + 1))
         fi
     done
     
@@ -277,8 +377,10 @@ main() {
     echo ""
     
     # Check prerequisites
-    command -v docker >/dev/null 2>&1 || { log_error "docker is required"; exit 1; }
     command -v minikube >/dev/null 2>&1 || { log_error "minikube is required"; exit 1; }
+    
+    # Container runtime check is done at the top of the script
+    log_info "Using $CONTAINER_RUNTIME as container runtime"
     
     # Pre-pull all images locally first
     log_info "Step 1: Pre-pulling images locally..."
@@ -299,8 +401,24 @@ main() {
         # Load images
         load_images_to_cluster "$cluster"
         
-        # Handle custom image substitutions
-        handle_custom_images "$cluster"
+        # Special handling for snapshot-controller - force load if missing
+        local snapshot_controller_image="registry.k8s.io/sig-storage/snapshot-controller:v7.0.1"
+        if ! image_exists_in_minikube "$snapshot_controller_image" "$cluster"; then
+            log_warning "Snapshot controller image missing from $cluster, attempting direct load..."
+            if image_exists_locally "$snapshot_controller_image"; then
+                minikube image load "$snapshot_controller_image" --profile="$cluster" --daemon=true || {
+                    log_error "Failed to load snapshot-controller image into $cluster"
+                    log_info "Trying alternative method..."
+                    # Save and load manually
+                    $CONTAINER_RUNTIME save "$snapshot_controller_image" -o "/tmp/snapshot-controller-$cluster.tar" && \
+                    minikube image load "/tmp/snapshot-controller-$cluster.tar" --profile="$cluster" && \
+                    rm -f "/tmp/snapshot-controller-$cluster.tar" && \
+                    log_success "✓ Successfully loaded snapshot-controller via tar method"
+                }
+            else
+                log_error "Snapshot controller image not available locally for $cluster"
+            fi
+        fi
         echo ""
     done
     

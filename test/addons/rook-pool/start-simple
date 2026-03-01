@@ -6,7 +6,6 @@
 import json
 import os
 import sys
-import time
 
 import yaml
 
@@ -32,7 +31,7 @@ def deploy(cluster):
 
     print("Creating RBD pools (without snapshot scheduling)")
     for pool in POOL_NAMES:
-        template = drenv.template("replica-pool.yaml")
+        template = drenv.template("simple-pool.yaml")
         yaml = template.substitute(cluster=cluster, name=pool)
         kubectl.apply("--filename=-", input=yaml, context=cluster)
 
@@ -78,45 +77,6 @@ def wait(cluster):
     print(yaml.dump(info, sort_keys=False))
 
 
-def add_snapshot_schedules(cluster):
-    """Add snapshot schedules after pools are stable"""
-    print(f"Adding snapshot schedules to pools in cluster {cluster}...")
-    
-    # Wait a bit for RBD support module to be ready
-    print("Waiting for RBD support module to stabilize...")
-    time.sleep(30)
-    
-    # Try to add snapshot scheduling via Ceph tools pod
-    for attempt in range(3):
-        try:
-            print(f"Attempt {attempt + 1}: Adding snapshot schedule to replicapool...")
-            kubectl.exec(
-                "deployment/rook-ceph-tools", "-n", "rook-ceph",
-                "--", "rbd", "mirror", "snapshot", "schedule", "add",
-                "--pool", "replicapool", "2m", "14:00:00-05:00",
-                context=cluster
-            )
-            print("✓ Snapshot schedule added successfully via RBD command")
-            return
-        except Exception as e:
-            print(f"  Attempt {attempt + 1} failed: {e}")
-            if attempt < 2:
-                print(f"  Waiting 30 seconds before next attempt...")
-                time.sleep(30)
-    
-    # Fallback: try patching the CephBlockPool resource
-    print("Trying fallback method: patching CephBlockPool resource...")
-    try:
-        for pool in POOL_NAMES:
-            template = drenv.template("replica-pool-with-snapshots.yaml")
-            yaml_content = template.substitute(name=pool)
-            kubectl.apply("--filename=-", input=yaml_content, context=cluster)
-        print("✓ Snapshot schedules added via CephBlockPool patch")
-    except Exception as e:
-        print(f"⚠ Failed to add snapshot schedules: {e}")
-        print("Pools are functional without snapshot scheduling")
-
-
 if len(sys.argv) != 2:
     print(f"Usage: {sys.argv[0]} cluster")
     sys.exit(1)
@@ -126,4 +86,3 @@ cluster = sys.argv[1]
 
 deploy(cluster)
 wait(cluster)
-add_snapshot_schedules(cluster)

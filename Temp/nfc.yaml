@@ -1,0 +1,9 @@
+apiVersion: csiaddons.openshift.io/v1alpha1
+kind: NetworkFenceClass
+metadata:
+  name: rook-cephfs-fence-class
+spec:
+  provisioner: rook-ceph.cephfs.csi.ceph.com
+  parameters:
+    csiaddons.openshift.io/networkfence-secret-name: rook-csi-cephfs-provisioner
+    csiaddons.openshift.io/networkfence-secret-namespace: rook-ceph
