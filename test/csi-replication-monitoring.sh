@@ -188,6 +188,19 @@ comprehensive_csi_monitoring() {
     echo "🔄 Volume Replications (DR2):"
     kubectl --context=dr2 get volumereplication -A -o wide 2>/dev/null | head -10 || echo "  No active volume replications on dr2"
     echo ""
+
+    # NETWORK FENCE RESOURCES (moved to bottom for easy detection)
+    echo -e "${PURPLE}=== NETWORK FENCE RESOURCES ===${NC}"
+    echo "🔐 Network Fence Classes (DR1):"
+    kubectl --context=dr1 get networkfenceclass -A -o wide 2>/dev/null || echo "  No NetworkFenceClass resources found on dr1"
+    echo "🔐 Network Fence Classes (DR2):"
+    kubectl --context=dr2 get networkfenceclass -A -o wide 2>/dev/null || echo "  No NetworkFenceClass resources found on dr2"
+    echo ""
+    echo "🚫 Network Fences (DR1):"
+    kubectl --context=dr1 get networkfence -A -o wide 2>/dev/null || echo "  No NetworkFence resources found on dr1"
+    echo "🚫 Network Fences (DR2):"
+    kubectl --context=dr2 get networkfence -A -o wide 2>/dev/null || echo "  No NetworkFence resources found on dr2"
+    echo ""
     
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -328,7 +341,15 @@ storage_usage_monitoring() {
         kubectl --context=dr1 get pods -A --field-selector=status.phase=Running 2>/dev/null | head -8 && 
         echo "" && 
         echo "=== VOLUME SNAPSHOTS ===" && 
-        kubectl --context=dr1 get volumesnapshot -A 2>/dev/null | head -5 || echo "No volume snapshots found"
+        kubectl --context=dr1 get volumesnapshot -A 2>/dev/null | head -5 || echo "No volume snapshots found" && 
+        echo "" && 
+        echo "=== NETWORK FENCE CLASSES ===" && 
+        kubectl --context=dr1 get networkfenceclass -A -o wide 2>/dev/null || echo "No NetworkFenceClass resources found" && 
+        kubectl --context=dr2 get networkfenceclass -A -o wide 2>/dev/null || echo "No NetworkFenceClass resources found" && 
+        echo "" && 
+        echo "=== NETWORK FENCES ===" && 
+        kubectl --context=dr1 get networkfence -A -o wide 2>/dev/null || echo "No NetworkFence resources found on dr1" && 
+        kubectl --context=dr2 get networkfence -A -o wide 2>/dev/null || echo "No NetworkFence resources found on dr2"
     '
 }
 
