@@ -48,6 +48,12 @@ def fetch_secret_info(cluster):
         "--namespace=rook-ceph",
         context=cluster,
     )
+    if not secret_name or not secret_name.strip():
+        raise RuntimeError(
+            f"Cluster '{cluster}': CephBlockPool replicapool has no rbdMirrorBootstrapPeerSecretName. "
+            "Pool may be in degraded state after NetworkFence. Run 'make fix-rbd-mirror-health' or "
+            "recreate the pool."
+        )
 
     print(f"Getting secret {secret_name} token for cluster '{cluster}'")
     info["token"] = kubectl.get(

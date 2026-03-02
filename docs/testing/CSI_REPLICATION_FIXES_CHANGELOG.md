@@ -230,19 +230,25 @@ kubectl --context=dr1 -n rook-ceph exec -it deploy/rook-ceph-tools -- rbd mirror
 
 **Fix:**
 ```bash
-# One-step fix (recommended) - re-applies peer config and waits for healthy status
+# One-step fix (recommended) - cleans images, clears blocklist, re-applies peer config or restarts daemon
 make fix-rbd-mirror-health
 
 # Or manually:
 # 1. Clean error-state images
 ./scripts/cleanup-replicated-images.sh
 
-# 2. Re-apply RBD mirror peer configuration (this clears the WARNING)
+# 2. Clear OSD blocklist (ceph osd blocklist clear)
+
+# 3. Re-apply RBD mirror peer configuration (this clears the WARNING)
 make setup-rbd-mirroring
 
-# 3. Verify
+# 4. Verify
 kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool
 ```
+
+**Note:** When `rbdMirrorBootstrapPeerSecretName` is empty (pool degraded after NetworkFence), the script cannot re-apply peer config and falls back to clearing blocklist + restarting the daemon. If WARNING persists, run `make reset-csi-replication` or recreate the pool.
+
+**start-csi-replication:** The rook-toolbox addon clears the OSD blocklist when it runs, so `make start-csi-replication` on clusters that had NetworkFence will clear stale blocklist entries before rook-pool and rbd-mirror run.
 
 ### If CSI Addons connection errors persist
 

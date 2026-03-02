@@ -1,9 +1,0 @@
-apiVersion: csiaddons.openshift.io/v1alpha1
-kind: NetworkFence
-metadata:
-  name: test-fence-cephfs
-spec:
-  networkFenceClassName: rook-cephfs-fence-class
-  cidrs:
-    - 192.168.122.164/32   # dr2 node (storage node)
-  fenceState: Fenced

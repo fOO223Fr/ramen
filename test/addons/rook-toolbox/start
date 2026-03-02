@@ -30,6 +30,13 @@ def wait(cluster):
     print("ceph status:")
     print(ceph.tool(cluster, "ceph", "status").rstrip())
 
+    # Clear OSD blocklist - stale entries from NetworkFence can block rbd-mirror and pool setup
+    try:
+        ceph.clear_osd_blocklist(cluster)
+        print(f"Cleared OSD blocklist in cluster '{cluster}'")
+    except Exception:
+        pass
+
 
 if len(sys.argv) != 2:
     print(f"Usage: {sys.argv[0]} cluster")

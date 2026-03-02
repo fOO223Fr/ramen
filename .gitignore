@@ -67,3 +67,4 @@ ramendev/build
 ginkgo.report
 velero*
 test/Logs/*
+Temp/*
