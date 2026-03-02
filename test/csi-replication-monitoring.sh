@@ -130,9 +130,9 @@ comprehensive_csi_monitoring() {
     echo ""
     
     echo "🔄 RBD Mirroring Health (DR1):"
-    kubectl --context=dr1 -n rook-ceph exec -it deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null | head -10 || echo "  Cannot check RBD mirror status on dr1"
+    kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null | head -10 || echo "  Cannot check RBD mirror status on dr1"
     echo "🔄 RBD Mirroring Health (DR2):"
-    kubectl --context=dr2 -n rook-ceph exec -it deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null | head -10 || echo "  Cannot check RBD mirror status on dr2"
+    kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null | head -10 || echo "  Cannot check RBD mirror status on dr2"
     echo ""
 
     # CSI PODS AND DRIVERS
@@ -206,6 +206,14 @@ comprehensive_csi_monitoring() {
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
+# Wait for refresh interval or key press (space/enter) to refresh immediately
+# Usage: wait_for_refresh [interval_seconds]
+wait_for_refresh() {
+    local interval="${1:-10}"
+    echo -e "\n${YELLOW}Press Space or Enter to refresh now, or wait ${interval}s...${NC}"
+    read -t "$interval" -n 1 -s key || true
+}
+
 # Storage Classes monitoring
 storageclass_monitoring() {
     echo -e "${GREEN}💾 Starting Storage Classes & VRCs Monitoring...${NC}"
@@ -216,24 +224,26 @@ storageclass_monitoring() {
     echo "  • Volume Snapshot Classes"
     echo "  • CSI driver status"
     echo ""
-    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop monitoring${NC}"
+    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop. Space or Enter = refresh now.${NC}"
     echo ""
     sleep 2
     
-    watch -n 3 '
-        echo "=== STORAGE CLASSES ===" && 
-        kubectl --context=dr1 get storageclass -o wide 2>/dev/null | grep -E "(NAME|rook-ceph)" && 
-        kubectl --context=dr2 get storageclass -o wide 2>/dev/null | grep -v NAME | grep rook-ceph && 
-        echo "" && 
-        echo "=== VOLUME REPLICATION CLASSES ===" && 
-        kubectl --context=dr1 get volumereplicationclass 2>/dev/null && 
-        echo "" && 
-        echo "=== VOLUME SNAPSHOT CLASSES ===" && 
-        kubectl --context=dr1 get volumesnapshotclass 2>/dev/null && 
-        echo "" && 
-        echo "=== ACTIVE VOLUME REPLICATIONS ===" && 
+    while true; do
+        clear
+        echo "=== STORAGE CLASSES ==="
+        kubectl --context=dr1 get storageclass -o wide 2>/dev/null | grep -E "(NAME|rook-ceph)"
+        kubectl --context=dr2 get storageclass -o wide 2>/dev/null | grep -v NAME | grep rook-ceph
+        echo ""
+        echo "=== VOLUME REPLICATION CLASSES ==="
+        kubectl --context=dr1 get volumereplicationclass 2>/dev/null
+        echo ""
+        echo "=== VOLUME SNAPSHOT CLASSES ==="
+        kubectl --context=dr1 get volumesnapshotclass 2>/dev/null
+        echo ""
+        echo "=== ACTIVE VOLUME REPLICATIONS ==="
         kubectl --context=dr1 get volumereplication -A 2>/dev/null | head -5 || echo "No active replications"
-    '
+        wait_for_refresh 3
+    done
 }
 
 # CSI Addons monitoring
@@ -246,21 +256,23 @@ csi_addons_monitoring() {
     echo "  • CSI driver sidecar containers"
     echo "  • Controller connectivity status"
     echo ""
-    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop monitoring${NC}"
+    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop. Space or Enter = refresh now.${NC}"
     echo ""
     sleep 2
     
-    watch -n 3 '
-        echo "=== CSI ADDONS CONTROLLERS ===" && 
-        kubectl --context=dr1 get pods -n csi-addons-system -o wide 2>/dev/null && 
-        kubectl --context=dr2 get pods -n csi-addons-system -o wide 2>/dev/null && 
-        echo "" && 
-        echo "=== CSI ADDONS NODES ===" && 
-        kubectl --context=dr1 get csiaddonsnode -A 2>/dev/null || echo "No CSIAddonsNode resources" && 
-        echo "" && 
-        echo "=== CSI RBD PLUGIN PODS ===" && 
-        kubectl --context=dr1 -n rook-ceph get pods -l app=csi-rbdplugin | head -5 2>/dev/null
-    '
+    while true; do
+        clear
+        echo "=== CSI ADDONS CONTROLLERS ==="
+        kubectl --context=dr1 get pods -n csi-addons-system -o wide 2>/dev/null
+        kubectl --context=dr2 get pods -n csi-addons-system -o wide 2>/dev/null
+        echo ""
+        echo "=== CSI ADDONS NODES ==="
+        kubectl --context=dr1 get csiaddonsnode -A 2>/dev/null || echo "No CSIAddonsNode resources"
+        echo ""
+        echo "=== CSI RBD PLUGIN PODS ==="
+        kubectl --context=dr1 -n rook-ceph get pods -l app=csi-rbdplugin 2>/dev/null | head -5
+        wait_for_refresh 3
+    done
 }
 
 # RBD Mirroring monitoring
@@ -273,21 +285,23 @@ rbd_mirroring_monitoring() {
     echo "  • Cross-cluster replication health"
     echo "  • Image sync status"
     echo ""
-    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop monitoring${NC}"
+    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop. Space or Enter = refresh now.${NC}"
     echo ""
     sleep 2
     
-    watch -n 5 '
-        echo "=== RBD MIRROR DAEMONS ===" && 
-        kubectl --context=dr1 -n rook-ceph get pods -l app=rook-ceph-rbd-mirror 2>/dev/null && 
-        kubectl --context=dr2 -n rook-ceph get pods -l app=rook-ceph-rbd-mirror 2>/dev/null && 
-        echo "" && 
-        echo "=== RBD POOL STATUS (DR1) ===" && 
-        kubectl --context=dr1 -n rook-ceph exec deployment/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null | head -10 || echo "RBD status unavailable" && 
-        echo "" && 
-        echo "=== RBD IMAGES ===" && 
-        kubectl --context=dr1 -n rook-ceph exec deployment/rook-ceph-tools -- rbd ls replicapool 2>/dev/null | head -5 || echo "No RBD images"
-    '
+    while true; do
+        clear
+        echo "=== RBD MIRROR DAEMONS ==="
+        kubectl --context=dr1 -n rook-ceph get pods -l app=rook-ceph-rbd-mirror 2>/dev/null
+        kubectl --context=dr2 -n rook-ceph get pods -l app=rook-ceph-rbd-mirror 2>/dev/null
+        echo ""
+        echo "=== RBD POOL STATUS (DR1) ==="
+        kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null | head -10 || echo "RBD status unavailable"
+        echo ""
+        echo "=== RBD IMAGES ==="
+        kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd ls replicapool 2>/dev/null | head -5 || echo "No RBD images"
+        wait_for_refresh 5
+    done
 }
 
 # Ceph cluster monitoring
@@ -300,22 +314,24 @@ ceph_cluster_monitoring() {
     echo "  • OSD status"
     echo "  • Ceph operator pods"
     echo ""
-    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop monitoring${NC}"
+    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop. Space or Enter = refresh now.${NC}"
     echo ""
     sleep 2
     
-    watch -n 5 '
-        echo "=== CEPH CLUSTERS ===" && 
-        kubectl --context=dr1 -n rook-ceph get cephcluster,cephblockpool 2>/dev/null && 
-        kubectl --context=dr2 -n rook-ceph get cephcluster,cephblockpool 2>/dev/null && 
-        echo "" && 
-        echo "=== CEPH OPERATORS ===" && 
-        kubectl --context=dr1 -n rook-ceph get pods -l app=rook-ceph-operator 2>/dev/null && 
-        kubectl --context=dr2 -n rook-ceph get pods -l app=rook-ceph-operator 2>/dev/null && 
-        echo "" && 
-        echo "=== CEPH HEALTH (DR1) ===" && 
-        kubectl --context=dr1 -n rook-ceph exec deployment/rook-ceph-tools -- ceph status 2>/dev/null | head -8 || echo "Ceph status unavailable"
-    '
+    while true; do
+        clear
+        echo "=== CEPH CLUSTERS ==="
+        kubectl --context=dr1 -n rook-ceph get cephcluster,cephblockpool 2>/dev/null
+        kubectl --context=dr2 -n rook-ceph get cephcluster,cephblockpool 2>/dev/null
+        echo ""
+        echo "=== CEPH OPERATORS ==="
+        kubectl --context=dr1 -n rook-ceph get pods -l app=rook-ceph-operator 2>/dev/null
+        kubectl --context=dr2 -n rook-ceph get pods -l app=rook-ceph-operator 2>/dev/null
+        echo ""
+        echo "=== CEPH HEALTH (DR1) ==="
+        kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- ceph status 2>/dev/null | head -8 || echo "Ceph status unavailable"
+        wait_for_refresh 5
+    done
 }
 
 # PVC and storage usage monitoring
@@ -328,29 +344,31 @@ storage_usage_monitoring() {
     echo "  • Storage resource consumption"
     echo "  • Active applications with storage"
     echo ""
-    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop monitoring${NC}"
+    echo -e "${YELLOW}⚠️  Press Ctrl+C to stop. Space or Enter = refresh now.${NC}"
     echo ""
     sleep 2
     
-    watch -n 3 '
-        echo "=== PVCS WITH CEPH STORAGE ===" && 
-        kubectl --context=dr1 get pvc -A -o wide 2>/dev/null | grep -E "(NAME|rook-ceph)" | head -8 && 
-        kubectl --context=dr2 get pvc -A -o wide 2>/dev/null | grep -v NAME | grep rook-ceph | head -5 && 
-        echo "" && 
-        echo "=== PODS USING CEPH VOLUMES ===" && 
-        kubectl --context=dr1 get pods -A --field-selector=status.phase=Running 2>/dev/null | head -8 && 
-        echo "" && 
-        echo "=== VOLUME SNAPSHOTS ===" && 
-        kubectl --context=dr1 get volumesnapshot -A 2>/dev/null | head -5 || echo "No volume snapshots found" && 
-        echo "" && 
-        echo "=== NETWORK FENCE CLASSES ===" && 
-        kubectl --context=dr1 get networkfenceclass -A -o wide 2>/dev/null || echo "No NetworkFenceClass resources found" && 
-        kubectl --context=dr2 get networkfenceclass -A -o wide 2>/dev/null || echo "No NetworkFenceClass resources found" && 
-        echo "" && 
-        echo "=== NETWORK FENCES ===" && 
-        kubectl --context=dr1 get networkfence -A -o wide 2>/dev/null || echo "No NetworkFence resources found on dr1" && 
+    while true; do
+        clear
+        echo "=== PVCS WITH CEPH STORAGE ==="
+        kubectl --context=dr1 get pvc -A -o wide 2>/dev/null | grep -E "(NAME|rook-ceph)" | head -8
+        kubectl --context=dr2 get pvc -A -o wide 2>/dev/null | grep -v NAME | grep rook-ceph | head -5
+        echo ""
+        echo "=== PODS USING CEPH VOLUMES ==="
+        kubectl --context=dr1 get pods -A --field-selector=status.phase=Running 2>/dev/null | head -8
+        echo ""
+        echo "=== VOLUME SNAPSHOTS ==="
+        kubectl --context=dr1 get volumesnapshot -A 2>/dev/null | head -5 || echo "No volume snapshots found"
+        echo ""
+        echo "=== NETWORK FENCE CLASSES ==="
+        kubectl --context=dr1 get networkfenceclass -A -o wide 2>/dev/null || echo "No NetworkFenceClass resources found"
+        kubectl --context=dr2 get networkfenceclass -A -o wide 2>/dev/null || echo "No NetworkFenceClass resources found"
+        echo ""
+        echo "=== NETWORK FENCES ==="
+        kubectl --context=dr1 get networkfence -A -o wide 2>/dev/null || echo "No NetworkFence resources found on dr1"
         kubectl --context=dr2 get networkfence -A -o wide 2>/dev/null || echo "No NetworkFence resources found on dr2"
-    '
+        wait_for_refresh 3
+    done
 }
 
 # Show monitoring options
@@ -458,7 +476,7 @@ main() {
         # Direct comprehensive monitoring without menu
         while true; do
             comprehensive_csi_monitoring
-            sleep 5
+            wait_for_refresh 5
         done
     fi
     
@@ -475,11 +493,11 @@ main() {
             5) storage_usage_monitoring ;;
             6) 
                 echo -e "${GREEN}🔄 Starting Comprehensive CSI Replication Monitoring...${NC}"
-                echo -e "${YELLOW}⚠️  Press Ctrl+C to stop monitoring${NC}"
+                echo -e "${YELLOW}⚠️  Press Ctrl+C to stop. Space or Enter = refresh now.${NC}"
                 sleep 2
                 while true; do
                     comprehensive_csi_monitoring
-                    sleep 10
+                    wait_for_refresh 10
                 done
                 ;;
             7) show_commands ;;
