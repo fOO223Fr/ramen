@@ -191,7 +191,13 @@ def watch_pool_mirroring_status(cluster, timeout=180):
         )
         with closing(watcher):
             for line in watcher:
-                summary = json.loads(line)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    summary = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
                 print(f"Cluster '{cluster}' mirroring status': {summary}")
 
                 if mirroring_is_healthy(summary):
@@ -257,6 +263,14 @@ wait_until_rbd_mirror_is_ready(cluster2)
 
 log_blocklist(cluster1)
 log_blocklist(cluster2)
+
+# Clear OSD blocklist - stale entries from NetworkFence tests can block rbd-mirror
+for cluster in [cluster1, cluster2]:
+    try:
+        ceph.clear_osd_blocklist(cluster)
+        print(f"Cleared OSD blocklist in cluster '{cluster}'")
+    except Exception:
+        pass
 
 wait_until_pool_mirroring_is_healthy(cluster1)
 wait_until_pool_mirroring_is_healthy(cluster2)

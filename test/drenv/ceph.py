@@ -9,19 +9,28 @@ def list_osd_blocklist(cluster):
     """
     List osd block list.
     """
-    out = tool(cluster, "ceph", "--format=json", "osd", "blocklist", "ls")
+    try:
+        out = tool(cluster, "ceph", "--format=json", "osd", "blocklist", "ls")
+    except Exception:
+        return []
 
-    # We get invalid json:
+    # We get invalid json from some Ceph versions:
     #
     #   \n[{"addr": "...", "until": "..."}][]
+    #   or multiple concatenated arrays, or empty output
     #
-    # Trim the newline at the front and the [] suffix for now.
-    # TODO: report ceph bug and find a better way to parse.
     out = out.strip()
+    if not out:
+        return []
     if out.endswith("[]"):
         out = out[:-2]
-
-    return json.loads(out)
+    # Ceph may output invalid JSON (concatenated arrays, trailing []). Parse only
+    # the first complete JSON value to avoid "Extra data" JSONDecodeError.
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(out)
+        return obj if isinstance(obj, list) else []
+    except json.JSONDecodeError:
+        return []
 
 
 def clear_osd_blocklist(cluster):

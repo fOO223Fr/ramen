@@ -219,6 +219,31 @@ kubectl --context=dr1 -n rook-ceph exec -it deploy/rook-ceph-tools -- rbd mirror
 
 **Note:** The Makefile now includes a check in `setup-rbd-mirroring` to automatically deploy Ceph on DR2 if missing.
 
+### Problem: RBD mirror daemon health WARNING (after NetworkFence tests)
+
+**Symptoms:**
+- `rbd mirror pool status replicapool` shows `health: WARNING` and `daemon health: WARNING`
+- Occurs after failed or interrupted CSI tests that use NetworkFence (e.g. L1-E-003)
+- Restarting rbd-mirror pods alone does not clear the WARNING
+
+**Root Cause:** Per [rook/rook#11485](https://github.com/rook/rook/issues/11485), the daemon health WARNING persists until the CephBlockPool peer configuration is re-applied. The peer token/secret must be patched onto the pool for the rbd-mirror daemon to report OK.
+
+**Fix:**
+```bash
+# One-step fix (recommended) - re-applies peer config and waits for healthy status
+make fix-rbd-mirror-health
+
+# Or manually:
+# 1. Clean error-state images
+./scripts/cleanup-replicated-images.sh
+
+# 2. Re-apply RBD mirror peer configuration (this clears the WARNING)
+make setup-rbd-mirroring
+
+# 3. Verify
+kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool
+```
+
 ### If CSI Addons connection errors persist
 
 ```bash

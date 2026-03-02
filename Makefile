@@ -264,6 +264,10 @@ fix-snapshot-controller-images: ## Fix snapshot-controller to use working image 
 fix-csi-addons-tls: ## Apply TLS configuration fix to CSI Addons controllers and sidecars.
 	./scripts/fix-csi-addons-tls.sh
 
+.PHONY: fix-rbd-mirror-health
+fix-rbd-mirror-health: ## Fix RBD mirror daemon health WARNING (e.g. after failed NetworkFence tests). Re-applies peer config when possible; restarts daemon if setup would hang.
+	./scripts/fix-rbd-mirror-health.sh
+
 .PHONY: delete-csi-replication
 delete-csi-replication: venv ## Delete CSI Replication clusters completely.
 	@echo "Cleaning up old replicated images from both clusters..."
