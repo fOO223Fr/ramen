@@ -96,9 +96,9 @@ comprehensive_csi_monitoring() {
     echo ""
     
     echo "🔄 Volume Replication Classes (DR1):"
-    kubectl --context=dr1 get volumereplicationclass -o wide 2>/dev/null || echo "  No VolumeReplicationClasses found"
+    kubectl --context=dr1 get volumereplicationclass -o custom-columns=NAME:.metadata.name,DRIVER:.spec.provisioner 2>/dev/null || echo "  No VolumeReplicationClasses found"
     echo "🔄 Volume Replication Classes (DR2):"
-    kubectl --context=dr2 get volumereplicationclass -o wide 2>/dev/null || echo "  No VolumeReplicationClasses found"
+    kubectl --context=dr2 get volumereplicationclass -o custom-columns=NAME:.metadata.name,DRIVER:.spec.provisioner 2>/dev/null || echo "  No VolumeReplicationClasses found"
     echo ""
     
     echo "📸 Volume Snapshot Classes (DR1):"
@@ -176,30 +176,35 @@ comprehensive_csi_monitoring() {
     # STORAGE USAGE & PVCS (moved to bottom for easy detection)
     echo -e "${PURPLE}=== STORAGE USAGE & PVCS ===${NC}"
     echo "📦 PVCs using Ceph storage (DR1):"
-    kubectl --context=dr1 get pvc -A -o wide 2>/dev/null | grep -E "(NAME|rook-ceph)" | head -8 || echo "  No PVCs using Ceph storage on dr1"
+    kubectl --context=dr1 get pvc -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,SIZE:.spec.resources.requests.storage,SC:.spec.storageClassName 2>/dev/null | grep -E "(NAMESPACE|rook-ceph)" | head -8 || echo "  No PVCs using Ceph storage on dr1"
     echo "📦 PVCs using Ceph storage (DR2):"
-    kubectl --context=dr2 get pvc -A -o wide 2>/dev/null | grep -E "(NAME|rook-ceph)" | head -8 || echo "  No PVCs using Ceph storage on dr2"
+    kubectl --context=dr2 get pvc -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,SIZE:.spec.resources.requests.storage,SC:.spec.storageClassName 2>/dev/null | grep -E "(NAMESPACE|rook-ceph)" | head -8 || echo "  No PVCs using Ceph storage on dr2"
     echo ""
 
     # ACTIVE VOLUME REPLICATIONS (moved to bottom for easy detection)
     echo -e "${CYAN}=== ACTIVE VOLUME REPLICATIONS ===${NC}"
     echo "🔄 Volume Replications (DR1):"
-    kubectl --context=dr1 get volumereplication -A -o wide 2>/dev/null | head -10 || echo "  No active volume replications on dr1"
+    kubectl --context=dr1 get volumereplication -A 2>/dev/null | head -10 || echo "  No active volume replications on dr1"
+    echo "  Detailed Status:"
+    kubectl --context=dr1 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.state}{"|"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"|"}{.status.message}{"\n"}{end}' 2>/dev/null | sed 's/|/  /g' || true
+    echo ""
     echo "🔄 Volume Replications (DR2):"
-    kubectl --context=dr2 get volumereplication -A -o wide 2>/dev/null | head -10 || echo "  No active volume replications on dr2"
+    kubectl --context=dr2 get volumereplication -A 2>/dev/null | head -10 || echo "  No active volume replications on dr2"
+    echo "  Detailed Status:"
+    kubectl --context=dr2 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.state}{"|"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"|"}{.status.message}{"\n"}{end}' 2>/dev/null | sed 's/|/  /g' || true
     echo ""
 
     # NETWORK FENCE RESOURCES (moved to bottom for easy detection)
     echo -e "${PURPLE}=== NETWORK FENCE RESOURCES ===${NC}"
     echo "🔐 Network Fence Classes (DR1):"
-    kubectl --context=dr1 get networkfenceclass -A -o wide 2>/dev/null || echo "  No NetworkFenceClass resources found on dr1"
+    kubectl --context=dr1 get networkfenceclass -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PROVISIONER:.spec.provisioner,PARAMETERS:.spec.parameters 2>/dev/null || echo "  No NetworkFenceClass resources found on dr1"
     echo "🔐 Network Fence Classes (DR2):"
-    kubectl --context=dr2 get networkfenceclass -A -o wide 2>/dev/null || echo "  No NetworkFenceClass resources found on dr2"
+    kubectl --context=dr2 get networkfenceclass -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PROVISIONER:.spec.provisioner,PARAMETERS:.spec.parameters 2>/dev/null || echo "  No NetworkFenceClass resources found on dr2"
     echo ""
     echo "🚫 Network Fences (DR1):"
-    kubectl --context=dr1 get networkfence -A -o wide 2>/dev/null || echo "  No NetworkFence resources found on dr1"
+    kubectl --context=dr1 get networkfence -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.networkFenceClassName,FENCESTATE:.spec.fenceState,CIDRS:.spec.cidrs 2>/dev/null || echo "  No NetworkFence resources found on dr1"
     echo "🚫 Network Fences (DR2):"
-    kubectl --context=dr2 get networkfence -A -o wide 2>/dev/null || echo "  No NetworkFence resources found on dr2"
+    kubectl --context=dr2 get networkfence -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.networkFenceClassName,FENCESTATE:.spec.fenceState,CIDRS:.spec.cidrs 2>/dev/null || echo "  No NetworkFence resources found on dr2"
     echo ""
     
     echo ""
@@ -241,7 +246,9 @@ storageclass_monitoring() {
         kubectl --context=dr1 get volumesnapshotclass 2>/dev/null
         echo ""
         echo "=== ACTIVE VOLUME REPLICATIONS ==="
-        kubectl --context=dr1 get volumereplication -A 2>/dev/null | head -5 || echo "No active replications"
+        kubectl --context=dr1 get volumereplication -A 2>/dev/null | head -5
+        echo "  Detailed Status:"
+        kubectl --context=dr1 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.state}{"|"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"|"}{.status.message}{"\n"}{end}' 2>/dev/null | sed 's/|/  /g' || echo "  No active replications"
         wait_for_refresh 3
     done
 }
@@ -351,8 +358,8 @@ storage_usage_monitoring() {
     while true; do
         clear
         echo "=== PVCS WITH CEPH STORAGE ==="
-        kubectl --context=dr1 get pvc -A -o wide 2>/dev/null | grep -E "(NAME|rook-ceph)" | head -8
-        kubectl --context=dr2 get pvc -A -o wide 2>/dev/null | grep -v NAME | grep rook-ceph | head -5
+        kubectl --context=dr1 get pvc -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,SIZE:.spec.resources.requests.storage,SC:.spec.storageClassName 2>/dev/null | grep -E "(NAMESPACE|rook-ceph)" | head -8
+        kubectl --context=dr2 get pvc -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATUS:.status.phase,SIZE:.spec.resources.requests.storage,SC:.spec.storageClassName 2>/dev/null | grep -v NAME | grep rook-ceph | head -5
         echo ""
         echo "=== PODS USING CEPH VOLUMES ==="
         kubectl --context=dr1 get pods -A --field-selector=status.phase=Running 2>/dev/null | head -8
@@ -360,13 +367,18 @@ storage_usage_monitoring() {
         echo "=== VOLUME SNAPSHOTS ==="
         kubectl --context=dr1 get volumesnapshot -A 2>/dev/null | head -5 || echo "No volume snapshots found"
         echo ""
+        echo "=== ACTIVE VOLUME REPLICATIONS ==="
+        kubectl --context=dr1 get volumereplication -A 2>/dev/null | head -5
+        echo "  Detailed Status:"
+        kubectl --context=dr1 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.state}{"|"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"|"}{.status.message}{"\n"}{end}' 2>/dev/null | sed 's/|/  /g' || echo "  No active replications"
+        echo ""
         echo "=== NETWORK FENCE CLASSES ==="
-        kubectl --context=dr1 get networkfenceclass -A -o wide 2>/dev/null || echo "No NetworkFenceClass resources found"
-        kubectl --context=dr2 get networkfenceclass -A -o wide 2>/dev/null || echo "No NetworkFenceClass resources found"
+        kubectl --context=dr1 get networkfenceclass -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PROVISIONER:.spec.provisioner 2>/dev/null | head -5 || echo "No NetworkFenceClass resources found on dr1"
+        kubectl --context=dr2 get networkfenceclass -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PROVISIONER:.spec.provisioner 2>/dev/null | head -5 || echo "No NetworkFenceClass resources found on dr2"
         echo ""
         echo "=== NETWORK FENCES ==="
-        kubectl --context=dr1 get networkfence -A -o wide 2>/dev/null || echo "No NetworkFence resources found on dr1"
-        kubectl --context=dr2 get networkfence -A -o wide 2>/dev/null || echo "No NetworkFence resources found on dr2"
+        kubectl --context=dr1 get networkfence -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.networkFenceClassName,FENCESTATE:.spec.fenceState,CIDRS:.spec.cidrs 2>/dev/null | head -5 || echo "No NetworkFence resources found on dr1"
+        kubectl --context=dr2 get networkfence -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,CLASS:.spec.networkFenceClassName,FENCESTATE:.spec.fenceState,CIDRS:.spec.cidrs 2>/dev/null | head -5 || echo "No NetworkFence resources found on dr2"
         wait_for_refresh 3
     done
 }
