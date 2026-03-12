@@ -1,7 +1,14 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Fix remaining image issues after drenv cache loading
 
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/utils.sh
+source "$SCRIPT_DIR/utils.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -9,7 +16,10 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+detect_container_runtime
+
 echo -e "${GREEN}=== Fixing Remaining Image Issues ===${NC}"
+echo -e "${YELLOW}Using $CONTAINER_RUNTIME as container runtime${NC}"
 
 # List of remaining images that need manual loading
 # (these are not handled by drenv cache due to custom repositories)
@@ -33,7 +43,7 @@ load_images() {
         echo -e "${YELLOW}Pulling batch: ${batch[@]}${NC}"
         
         for image in "${batch[@]}"; do
-            docker pull "$image" &
+            $CONTAINER_RUNTIME pull "$image" &
         done
         wait
     done

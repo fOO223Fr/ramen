@@ -6,6 +6,10 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/utils.sh
+source "$SCRIPT_DIR/utils.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,16 +22,7 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Detect container runtime
-CONTAINER_RUNTIME=""
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    CONTAINER_RUNTIME="docker"
-elif command -v podman >/dev/null 2>&1; then
-    CONTAINER_RUNTIME="podman"
-else
-    log_error "Neither docker nor podman is available"
-    exit 1
-fi
+detect_container_runtime
 
 SNAPSHOT_IMAGE="registry.k8s.io/sig-storage/snapshot-controller:v7.0.1"
 

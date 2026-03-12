@@ -29,7 +29,7 @@ quay.io/nladha/csiaddons-sidecar:cg
 
 # Supporting images
 alpine:3.19
-gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0
+registry.k8s.io/kubebuilder/kube-rbac-proxy:v0.8.0
 
 # Registry and test images
 docker.io/registry:3.0.0

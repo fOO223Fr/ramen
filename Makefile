@@ -157,7 +157,7 @@ preload-images: ## Pre-load container images into CSI replication clusters (dr1 
 	./scripts/preload-images.sh dr1 dr2
 
 .PHONY: setup-csi-replication
-setup-csi-replication: drenv-prereqs venv ## Setup DR clusters with Ceph SDS Storage for CSI Replication testing using rook environment.
+setup-csi-replication: drenv-prereqs venv ## Setup DR clusters with Ceph SDS Storage for CSI Replication testing using rook environment. Uses podman by default; set CONTAINER_RUNTIME=docker to use docker.
 	./scripts/setup-csi-replication.sh
 
 .PHONY: stop-csi-replication  
@@ -169,27 +169,7 @@ stop-csi-replication: venv ## Stop CSI Replication clusters (keep VMs).
 
 .PHONY: start-csi-replication
 start-csi-replication: venv ## Start existing CSI Replication clusters.
-	@echo "Starting CSI replication clusters..."
-	@# Check if clusters exist (running or stopped) by looking for minikube profiles
-	@if ! minikube profile list 2>/dev/null | grep -q "dr1" || \
-	    ! minikube profile list 2>/dev/null | grep -q "dr2"; then \
-		echo "⚠️  Clusters not found. Run 'make setup-csi-replication' first."; \
-		exit 1; \
-	fi
-	cd test && source ../venv && drenv start envs/rook.yaml
-	@echo "Waiting for basic cluster readiness..."
-	kubectl --context=dr1 wait --for=condition=Ready nodes --all --timeout=300s
-	kubectl --context=dr2 wait --for=condition=Ready nodes --all --timeout=300s
-	@echo "Waiting for CSI components to be deployed by Rook..."
-	@echo "  Waiting for CSI deployments on dr1..."
-	-kubectl --context=dr1 wait --for=condition=available deployment/csi-rbdplugin-provisioner -n rook-ceph --timeout=300s
-	-kubectl --context=dr1 wait --for=condition=available deployment/csi-cephfsplugin-provisioner -n rook-ceph --timeout=300s
-	@echo "  Waiting for CSI deployments on dr2..."
-	-kubectl --context=dr2 wait --for=condition=available deployment/csi-rbdplugin-provisioner -n rook-ceph --timeout=300s
-	-kubectl --context=dr2 wait --for=condition=available deployment/csi-cephfsplugin-provisioner -n rook-ceph --timeout=300s
-	@echo "Applying post-start configuration fixes..."
-	$(MAKE) setup-csi-storage-resources
-	@echo "✅ CSI replication clusters started and configured successfully"
+	./scripts/start-csi-replication.sh
 
 .PHONY: cleanup-replicated-images
 cleanup-replicated-images: ## Clean up old replicated images from both CSI clusters.
@@ -202,8 +182,8 @@ reset-csi-replication: ## Reset CSI Replication environment for clean setup (del
 	@echo "Cleaning up any remaining minikube profiles..."
 	-minikube delete --profile=dr1 2>/dev/null || true
 	-minikube delete --profile=dr2 2>/dev/null || true
-	@echo "Cleaning up any remaining docker containers..."
-	-docker container prune -f 2>/dev/null || true
+	@echo "Cleaning up local registry..."
+	-$(MAKE) clean-local-registry 2>/dev/null || true
 	@echo "✅ Environment reset complete. Ready for fresh setup."
 
 .PHONY: fix-csi-provisioners
@@ -242,23 +222,7 @@ fix-rook-operator-images: ## Update Rook operator to use quay.io images instead 
 
 .PHONY: fix-snapshot-controller-images
 fix-snapshot-controller-images: ## Fix snapshot-controller to use working image version and compatible args.
-	@echo "Fixing snapshot-controller image and arguments..."
-	@# Check and update dr1 snapshot-controller
-	@if kubectl --context=dr1 -n kube-system get deployment snapshot-controller >/dev/null 2>&1; then \
-		kubectl --context=dr1 -n kube-system patch deployment snapshot-controller --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "registry.k8s.io/sig-storage/snapshot-controller:v7.0.1"}]' && \
-		kubectl --context=dr1 -n kube-system patch deployment snapshot-controller --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": ["--v=5", "--leader-election=true"]}]' && \
-		echo "✓ Fixed dr1 snapshot-controller image and arguments"; \
-	else \
-		echo "⚠ snapshot-controller not found in dr1 cluster"; \
-	fi
-	@# Check and update dr2 snapshot-controller  
-	@if kubectl --context=dr2 -n kube-system get deployment snapshot-controller >/dev/null 2>&1; then \
-		kubectl --context=dr2 -n kube-system patch deployment snapshot-controller --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": "registry.k8s.io/sig-storage/snapshot-controller:v7.0.1"}]' && \
-		kubectl --context=dr2 -n kube-system patch deployment snapshot-controller --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": ["--v=5", "--leader-election=true"]}]' && \
-		echo "✓ Fixed dr2 snapshot-controller image and arguments"; \
-	else \
-		echo "⚠ snapshot-controller not found in dr2 cluster"; \
-	fi
+	./scripts/fix-snapshot-controller-images.sh
 
 .PHONY: fix-csi-addons-tls
 fix-csi-addons-tls: ## Apply TLS configuration fix to CSI Addons controllers and sidecars.
@@ -278,7 +242,7 @@ delete-csi-replication: venv ## Delete CSI Replication clusters completely.
 	@echo "Note: Local registry is preserved for faster future setups. Use 'make clean-local-registry' to remove it."
 
 .PHONY: clean-local-registry
-clean-local-registry: ## Clean up local Docker registry used for CSI replication.
+clean-local-registry: ## Clean up local registry used for CSI replication. Uses podman by default; set CONTAINER_RUNTIME=docker to use docker.
 	./scripts/cleanup-local-registry.sh
 
 .PHONY: clean-pvc-vr

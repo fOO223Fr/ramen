@@ -6,6 +6,10 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/utils.sh
+source "$SCRIPT_DIR/utils.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -35,21 +39,25 @@ log_success() { log_both "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { log_both "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { log_both "${RED}[ERROR]${NC} $1"; }
 
+detect_container_runtime
+export CONTAINER_RUNTIME
+
 log_info "🚀 Setting up CSI Replication environment using Rook/Ceph-focused setup..."
 log_info "This creates dr1 + dr2 clusters with Ceph, CSI addons, and RBD mirroring."
 log_info "Logging to: $LOG_FILE"
 log_info ""
 
 log_info "Step 1: Setting up local registry to avoid network pull issues..."
+log_info "Using $CONTAINER_RUNTIME as container runtime"
 
 # Check if local registry is running
 REGISTRY_RUNNING=false
-if docker ps | grep -q "local-registry"; then
+if $CONTAINER_RUNTIME ps | grep -q "local-registry"; then
     REGISTRY_RUNNING=true
     log_info "Local registry already running on port 5000"
 else
-    log_info "Starting local Docker registry on port 5000..."
-    docker run -d --restart=always -p 5000:5000 --name local-registry registry:2
+    log_info "Starting local registry on port 5000..."
+    $CONTAINER_RUNTIME run -d --restart=always -p 5000:5000 --name local-registry registry:2
     REGISTRY_RUNNING=true
 fi
 
@@ -88,14 +96,18 @@ else
 fi
 
 # Load only missing images
+# Podman requires --tls-verify=false for HTTP registries (localhost:5000)
+PUSH_OPTS=()
+[[ "$CONTAINER_RUNTIME" == "podman" ]] && PUSH_OPTS=(--tls-verify=false)
+
 if [ ${#IMAGES_TO_LOAD[@]} -gt 0 ]; then
     log_info "Loading ${#IMAGES_TO_LOAD[@]} missing images to local registry..."
     for image in "${IMAGES_TO_LOAD[@]}"; do
         local_tag="localhost:5000/${image#*/}"
         log_info "Processing: $image -> $local_tag"
-        docker pull "$image" || log_warning "Failed to pull $image, will try to continue"
-        docker tag "$image" "$local_tag" || true
-        docker push "$local_tag" || log_warning "Failed to push $local_tag"
+        $CONTAINER_RUNTIME pull "$image" || log_warning "Failed to pull $image, will try to continue"
+        $CONTAINER_RUNTIME tag "$image" "$local_tag" || true
+        $CONTAINER_RUNTIME push "${PUSH_OPTS[@]}" "$local_tag" || log_warning "Failed to push $local_tag"
     done
 else
     log_info "All required images already present in local registry"
@@ -121,8 +133,8 @@ kubectl --context=dr2 wait --for=condition=Ready nodes --all --timeout=120s 2>/d
 log_info ""
 log_info "Step 5: Pre-loading images to minikube clusters BEFORE Rook deployment..."
 log_info "Images must be loaded before addons run to avoid ImagePullBackOff"
-# Use docker since setup loaded images to docker registry - ensures image source consistency
-PREFER_DOCKER=1 ./scripts/preload-images.sh dr1 dr2 || log_warning "Image pre-loading had issues, deployments may be slower"
+# CONTAINER_RUNTIME is exported; preload-images uses it (podman preferred by default)
+./scripts/preload-images.sh dr1 dr2 || log_warning "Image pre-loading had issues, deployments may be slower"
 
 log_info ""
 log_info "Step 6: Deploying Rook/Ceph addons (images are now preloaded)..."

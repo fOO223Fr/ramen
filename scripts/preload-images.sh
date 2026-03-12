@@ -7,6 +7,10 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/utils.sh
+source "$SCRIPT_DIR/utils.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,23 +26,14 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Detect container runtime (docker or podman)
-# minikube image load requires images in host's container runtime - must match what setup uses
-# PREFER_DOCKER=1 when invoked from setup - ensures consistency with setup's docker-based registry
-CONTAINER_RUNTIME=""
-if [ "${PREFER_DOCKER:-0}" = "1" ] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    CONTAINER_RUNTIME="docker"
-    log_info "Using docker (PREFER_DOCKER=1 for consistency with setup)"
-elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    CONTAINER_RUNTIME="docker"
-    log_info "Using docker as container runtime"
-elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
-    CONTAINER_RUNTIME="podman"
-    log_info "Using podman as container runtime (docker not available)"
+# CONTAINER_RUNTIME from parent (setup-csi-replication) takes precedence
+# PREFER_DOCKER=1 forces docker when both are available
+if [ "${PREFER_DOCKER:-0}" = "1" ]; then
+    detect_container_runtime --prefer-docker
 else
-    log_error "Neither docker nor podman is available and responsive"
-    exit 1
+    detect_container_runtime
 fi
+log_info "Using $CONTAINER_RUNTIME as container runtime"
 
 # Define required images for Rook/Ceph and CSI
 declare -a ROOK_IMAGES=(
@@ -63,7 +58,7 @@ declare -a CSI_ADDONS_IMAGES=(
     "quay.io/csiaddons/k8s-sidecar:v0.11.0"
     "quay.io/nladha/csiaddons-controller:cg"
     "alpine:3.19"
-    "gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0"
+    "registry.k8s.io/kubebuilder/kube-rbac-proxy:v0.8.0"
     "quay.io/cephcsi/cephcsi:v3.11.0"
     "quay.io/cephcsi/cephcsi:v3.15.0"
 )
