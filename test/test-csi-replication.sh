@@ -3,6 +3,11 @@
 
 set -e  # Exit on error
 
+# Initialize logging
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/utils.sh"
+init_logging "test-csi-replication"
+start_capture_logging
+
 echo "=== CSI Replication Health Check ==="
 
 echo "0. Cleaning up any previous test resources..."
@@ -251,3 +256,6 @@ kubectl --context=dr1 patch pvc test-replication-pvc --type='merge' -p='{"metada
 kubectl --context=dr1 delete pvc test-replication-pvc --ignore-not-found=true
 rm -f /tmp/test-pvc.yaml /tmp/test-volrep.yaml
 echo "Cleanup complete"
+
+# End logging
+end_logging

@@ -249,6 +249,14 @@ clean-local-registry: ## Clean up local registry used for CSI replication. Uses 
 clean-pvc-vr: ## Clean all VolumeReplications and PVCs for fresh CSI replication testing.
 	./scripts/cleanup-pvc-vr.sh -y
 
+.PHONY: restart-csi-service
+restart-csi-service: ## Restart CSI replication service - detects and fixes missing services and leader election failures.
+	./scripts/restart-csi-service.sh
+
+.PHONY: diagnose-csi-replication
+diagnose-csi-replication: ## Run comprehensive diagnostics on CSI replication setup - identifies configuration and connectivity issues.
+	./scripts/diagnose-csi-replication.sh
+
 .PHONY: status-csi-replication
 status-csi-replication: ## Check status of CSI Replication clusters.
 	@echo "Checking cluster contexts..."

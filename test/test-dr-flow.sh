@@ -4,6 +4,11 @@
 
 set -e
 
+# Initialize logging
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/utils.sh"
+init_logging "test-dr-flow"
+start_capture_logging
+
 echo "=== Complete DR Failover Flow Test ==="
 echo ""
 echo "This test demonstrates:"
@@ -476,6 +481,9 @@ else
     echo "  - Ceph snapshot schedule (check 2m interval)"
     echo "  - Volume promotion issues"
 fi
+
+# End logging
+end_logging
 
 echo ""
 echo "==================== CLEANUP ===================="

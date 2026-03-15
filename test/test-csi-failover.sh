@@ -3,6 +3,11 @@
 
 set -e
 
+# Initialize logging
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/utils.sh"
+init_logging "test-csi-failover"
+start_capture_logging
+
 echo "=== CSI Volume Replication Failover Test ==="
 echo ""
 
@@ -20,6 +25,9 @@ cleanup() {
     
     rm -f /tmp/test-failover-pvc.yaml /tmp/test-failover-volrep-dr1.yaml
     echo "✓ Cleanup completed"
+    
+    # End logging
+    end_logging
 }
 
 # Set trap to cleanup on exit

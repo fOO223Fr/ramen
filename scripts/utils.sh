@@ -34,3 +34,78 @@ detect_container_runtime() {
         exit 1
     fi
 }
+
+# Initialize logging for a script
+# Usage: init_logging "script-name" [log-dir]
+#   script-name: Name of the script (e.g., setup-csi-replication)
+#   log-dir: Optional directory for logs (defaults to Logs/ for root scripts, test/Logs/ for e2e tests)
+#
+# Sets LOGFILE and enables tee-ing output to both stdout and log file
+init_logging() {
+    local script_name="$1"
+    local log_dir="${2:-}"
+    local start_time
+    start_time=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # Auto-detect log directory based on script context
+    if [[ -z "$log_dir" ]]; then
+        if [[ $(pwd) == */test ]]; then
+            log_dir="test/Logs"
+        else
+            log_dir="Logs"
+        fi
+    fi
+    
+    # Create log directory if it doesn't exist
+    mkdir -p "$log_dir"
+    
+    # Set LOGFILE with timestamp
+    LOGFILE="$log_dir/${script_name}-$(date +%Y%m%d-%H%M%S).log"
+    
+    # Export LOGFILE so subshells can access it
+    export LOGFILE
+    
+    # Print header to console and log file
+    {
+        echo "╭─────────────────────────────────────────────────────╮"
+        echo "│ Script: $script_name"
+        echo "│ Started: $start_time"
+        echo "│ Logging to: $LOGFILE"
+        echo "╰─────────────────────────────────────────────────────╯"
+        echo ""
+    }
+}
+
+# Capture all output (stdout and stderr) to both terminal and log file
+# Usage: start_capture_logging
+#   Call this after init_logging() to enable tee-ing to log file
+#
+# Note: Must be called after init_logging() has set LOGFILE
+start_capture_logging() {
+    if [[ -z "$LOGFILE" ]]; then
+        echo "ERROR: start_capture_logging called before init_logging()" >&2
+        return 1
+    fi
+    
+    # Use tee to capture both stdout and stderr
+    exec 1> >(tee -a "$LOGFILE")
+    exec 2>&1
+}
+
+# Print final log location summary
+# Usage: end_logging
+end_logging() {
+    if [[ -z "$LOGFILE" ]]; then
+        return 0
+    fi
+    
+    local end_time
+    end_time=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    echo ""
+    echo "╭─────────────────────────────────────────────────────╮"
+    echo "│ Execution complete"
+    echo "│ Ended: $end_time"
+    echo "│ Log saved to: $LOGFILE"
+    echo "╰─────────────────────────────────────────────────────╯"
+}
