@@ -2,6 +2,28 @@
 
 This guide covers setting up and testing CSI volume replication functionality using RamenDR's Rook/Ceph environment.
 
+> **Relationship to RamenDR tests:** These tests are **CSI replication testing additions** – scripts added in forks or branches for CSI-specific replication. They are distinct from the upstream RamenDR tests (basic test, E2E, addon tests) described in [RamenDRTests.md](./RamenDRTests.md#what-this-document-covers). See the "CSI replication testing additions" bullet in that document.
+
+## Test Scenario Map
+
+The following scripts cover CSI replication scenarios. Use this map to choose which test to run for a given scenario:
+
+| Scenario | Script | Make Target | What It Covers |
+|----------|--------|-------------|----------------|
+| **Infrastructure validation** | [`test/test-csi-replication.sh`](../../test/test-csi-replication.sh) | `make test-csi-replication` | CSI Addons controller, VolumeReplicationClass, StorageClass; PVC creation; VolumeReplication (primary); RBD mirror status; cross-cluster image verification |
+| **Volume state transitions** | [`test/test-csi-failover.sh`](../../test/test-csi-failover.sh) | `make test-csi-failover` | Demote (primary → secondary); promote (secondary → primary); failback; VR state validation; RBD mirror state across clusters |
+| **Full DR failover flow** | [`test/test-dr-flow.sh`](../../test/test-dr-flow.sh) | `make test-dr-flow` | Primary workload on DR1 with RBD mirroring; failover to DR2; K8s object (PVC/VR) recreation on DR2; application access to replicated data |
+
+### Quick Reference
+
+| Scenario | Command |
+|----------|---------|
+| Validate replication setup | `make test-csi-replication` |
+| Test demote/promote | `make test-csi-failover` |
+| Test complete DR failover | `make test-dr-flow` |
+
+---
+
 ## Overview
 
 The CSI replication testing environment provides:

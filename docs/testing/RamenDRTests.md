@@ -10,14 +10,14 @@ SPDX-License-Identifier: Apache-2.0
 This document describes the **existing functional and integration tests** in the upstream RamenDR project related to **Disaster Recovery (DR) and Replication scenarios**. It does **not** cover:
 
 - **Unit tests** – Controller logic tests in `*_test.go` files (see [testing.md](../testing.md))
-- **CSI replication testing additions** – Tests and scripts added in forks or branches for CSI-specific replication (e.g. `test-csi-replication.sh`, `test-csi-failover.sh`, `test-dr-flow.sh`)
+- **CSI replication testing additions** – Tests and scripts added in forks or branches for CSI-specific replication (e.g. `test-csi-replication.sh`, `test-csi-failover.sh`, `test-dr-flow.sh`). See [csi-replication-testing.md](./csi-replication-testing.md#test-scenario-map) for a map of scenarios and scripts.
 
 This document focuses on:
 
-- **Basic test** – Python-based DR flow test
-- **End-to-end (E2E) tests** – Go-based DR tests with configurable deployers and workloads
-- **Addon integration tests** – Tests run as part of the drenv environment setup
-- **Stress test** – Infrastructure robustness testing
+- **Basic test** – Python-based DR flow test ([`test/basic-test/`](../../test/basic-test/))
+- **End-to-end (E2E) tests** – Go-based DR tests with configurable deployers and workloads ([`e2e/`](../../e2e/))
+- **Addon integration tests** – Tests run as part of the drenv environment setup ([`test/addons/*/test`](../../test/addons/))
+- **Stress test** – Infrastructure robustness testing ([`test/stress-test/`](../../test/stress-test/))
 
 ---
 
@@ -167,7 +167,7 @@ Each TestDR subtest runs the same six steps:
 
 ### Test Generation
 
-Tests are generated from `config.yaml`:
+Tests are generated from [`config.yaml`](../../e2e/config.yaml.sample):
 
 ```yaml
 tests:
@@ -211,7 +211,7 @@ Requires KubeVirt addon and `envs/regional-dr-kubevirt.yaml`.
 
 ### E2E Implementation Notes
 
-- Uses `go test` (see `e2e/run.sh`)
+- Uses `go test` (see [`e2e/run.sh`](../../e2e/run.sh))
 - Config: `config.yaml` (cluster kubeconfigs)
 - Channel: Ensures OCM channel for ocm-ramen-samples; cleaned up after tests
 - Parallel: Subtests run in parallel (`t.Parallel()`)
@@ -229,7 +229,7 @@ All tests require a running multi-cluster environment. See:
 
 ## 1. Basic Test
 
-**Location:** `test/basic-test/`  
+**Location:** [`test/basic-test/`](../../test/basic-test/)  
 **Type:** Functional integration test  
 **Purpose:** Validates a complete DR lifecycle for a busybox application.
 
@@ -275,7 +275,7 @@ For more details, see [testing.md](../testing.md#end-to-end-tests).
 
 ## 2. End-to-End (E2E) Tests
 
-**Location:** `e2e/`  
+**Location:** [`e2e/`](../../e2e/)  
 **Type:** Functional integration tests (Go, standard testing package)  
 **Purpose:** Validates DR flows across multiple deployment methods, workloads, and storage configurations.
 
@@ -283,12 +283,12 @@ For more details, see [testing.md](../testing.md#end-to-end-tests).
 
 | Test | Description |
 |------|-------------|
-| **TestValidation** | Validates hub and managed clusters are accessible and Ramen operators are running |
-| **TestDR** | Full DR flow per configuration: Deploy → Enable → Failover → Relocate → Disable → Undeploy |
+| **TestValidation** | Validates hub and managed clusters are accessible and Ramen operators are running ([`e2e/validation_test.go`](../../e2e/validation_test.go)) |
+| **TestDR** | Full DR flow per configuration: Deploy → Enable → Failover → Relocate → Disable → Undeploy ([`e2e/dr_test.go`](../../e2e/dr_test.go)) |
 
 ### Configuration
 
-Tests are driven by `config.yaml` (see `e2e/config.yaml.sample`):
+Tests are driven by `config.yaml` (see [`e2e/config.yaml.sample`](../../e2e/config.yaml.sample)):
 
 - **Deployers:** `appset`, `subscr`, `disapp` (ApplicationSet, Subscription, Discovered Application)
 - **Workloads:** `deploy` (Deployment), `vm-pvc` (VirtualMachine with PVC)
@@ -343,7 +343,7 @@ For full details, see [e2e.md](../e2e.md).
 
 ## 3. Addon Integration Tests
 
-**Location:** `test/addons/*/test`  
+**Location:** [`test/addons/*/test`](../../test/addons/)  
 **Type:** Integration tests (run as part of drenv)  
 **Purpose:** Verify each addon deploys and functions correctly.
 
@@ -351,10 +351,10 @@ For full details, see [e2e.md](../e2e.md).
 
 | Addon | Test | Purpose |
 |-------|------|---------|
-| **rook-cephfs** | `test/addons/rook-cephfs/test` | CephFS PVC and VolumeSnapshot provisioning (single cluster) |
-| **rbd-mirror** | `test/addons/rbd-mirror/test` | **Uses CSI VolumeReplication CRD directly** – creates PVC + VR, waits for primary state, verifies RBD image appears on secondary, checks `rbd mirror image status` |
-| **submariner** | `test/addons/submariner/test` | Cross-cluster connectivity |
-| **velero** | `test/addons/velero/test` | Backup/restore |
+| **rook-cephfs** | [`test/addons/rook-cephfs/test`](../../test/addons/rook-cephfs/test) | CephFS PVC and VolumeSnapshot provisioning (single cluster) |
+| **rbd-mirror** | [`test/addons/rbd-mirror/test`](../../test/addons/rbd-mirror/test) | **Uses CSI VolumeReplication CRD directly** – creates PVC + VR, waits for primary state, verifies RBD image appears on secondary, checks `rbd mirror image status` |
+| **submariner** | [`test/addons/submariner/test`](../../test/addons/submariner/test) | Cross-cluster connectivity |
+| **velero** | [`test/addons/velero/test`](../../test/addons/velero/test) | Backup/restore |
 
 **Note:** The rbd-mirror addon test is the only one that directly exercises the CSI VolumeReplication CRD and RBD mirror image status. The rook-cephfs test validates CephFS provisioning and snapshots only (no cross-cluster replication).
 
@@ -381,7 +381,7 @@ Each addon runs its `start` script, then its `test` script. Failures are reporte
 
 ## 4. Stress Test
 
-**Location:** `test/stress-test/`  
+**Location:** [`test/stress-test/`](../../test/stress-test/)  
 **Type:** Infrastructure robustness test  
 **Purpose:** Evaluates drenv environment startup reliability over many runs.
 
@@ -399,7 +399,7 @@ stress-test/run -r 100 ../envs/regional-dr.yaml
 stress-test/run -r 100 -x ../envs/regional-dr.yaml  # Stop on first failure for debugging
 ```
 
-See [test/stress-test/README.md](../../test/stress-test/README.md) for details.
+See [`test/stress-test/README.md`](../../test/stress-test/README.md) for details.
 
 ---
 
@@ -407,10 +407,10 @@ See [test/stress-test/README.md](../../test/stress-test/README.md) for details.
 
 | Test Type | Location | DR/Replication Focus | Typical Use |
 |-----------|----------|----------------------|-------------|
-| Basic test | `test/basic-test/` | Full DR lifecycle | Quick smoke test |
-| E2E tests | `e2e/` | Full DR lifecycle, multiple deployers/workloads | Comprehensive validation |
-| Addon tests | `test/addons/*/test` | RBD mirroring, CephFS, Submariner, Velero | Integration verification |
-| Stress test | `test/stress-test/` | Environment startup | Reliability evaluation |
+| Basic test | [`test/basic-test/`](../../test/basic-test/) | Full DR lifecycle | Quick smoke test |
+| E2E tests | [`e2e/`](../../e2e/) | Full DR lifecycle, multiple deployers/workloads | Comprehensive validation |
+| Addon tests | [`test/addons/*/test`](../../test/addons/) | RBD mirroring, CephFS, Submariner, Velero | Integration verification |
+| Stress test | [`test/stress-test/`](../../test/stress-test/) | Environment startup | Reliability evaluation |
 
 ---
 
