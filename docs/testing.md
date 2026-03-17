@@ -63,7 +63,11 @@ The above picture shows the interfaces that are used in Ramen today.
 
 ## End-to-end tests
 
-The end-to-end testing framework isn't implemented yet. However, we have a basic
+For an overview of all functional and integration tests related to DR and replication
+(including basic test, E2E tests, and addon tests), see
+[testing/RamenDRTests.md](testing/RamenDRTests.md).
+
+The end-to-end testing framework isn't fully implemented yet. However, we have a basic
 test that you can use to test the basic flows of Ramen. `basic-test` requires
 the python virtual environment to be activated.
 
