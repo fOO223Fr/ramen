@@ -5,10 +5,16 @@
 
 # Script to clean up old replicated RBD images from both CSI replication clusters
 # Removes error-state images (any name) and CSI volumes (csi-vol-*) from replicapool on both dr1 and dr2
+#
+# Usage:
+#   ./cleanup-replicated-images.sh           # Full cleanup: delete all images
+#   ./cleanup-replicated-images.sh --error-state-only  # Only fix error/unknown state (keeps in-use images)
 
 set -e
 
 POOL_NAME="replicapool"
+ERROR_STATE_ONLY=false
+[[ "${1:-}" == "--error-state-only" ]] && ERROR_STATE_ONLY=true
 
 cleanup_cluster_images() {
     local cluster=$1
@@ -28,20 +34,21 @@ cleanup_cluster_images() {
         echo "  No images found on $cluster (pool may be empty)"
     fi
 
-    # Check for images in error state and handle them first
-    # Parse rbd mirror pool status --verbose: capture image names (any format) before "state:.*error"
-    echo "    Checking for images in error state..."
-    local error_images=$(kubectl exec -n rook-ceph --context=$cluster deploy/rook-ceph-tools -- \
+    # Check for images in error or unknown state and handle them first
+    # Unknown state blocks mirroring health (image_health: WARNING); error state needs force cleanup
+    # Parse rbd mirror pool status --verbose: capture image names before "state:.*error" or "state:.*unknown"
+    echo "    Checking for images in error or unknown state..."
+    local problematic_images=$(kubectl exec -n rook-ceph --context=$cluster deploy/rook-ceph-tools -- \
         rbd mirror pool status $POOL_NAME --verbose 2>/dev/null | \
         awk '/^[^[:space:]]+:$/ {name=$0; gsub(/:$/, "", name); gsub(/^[[:space:]]+/, "", name); next}
-             /state:[[:space:]]*error/ {if (name != "") {print name; name=""}}' || true)
+             /state:.*(error|unknown)/ {if (name != "") {print name; name=""}}' || true)
 
-    if [[ -n "$error_images" ]]; then
-        echo "    Found $(echo "$error_images" | wc -l) image(s) in error state, forcing cleanup..."
-        for img in $error_images; do
+    if [[ -n "$problematic_images" ]]; then
+        echo "    Found $(echo "$problematic_images" | wc -l) image(s) in error/unknown state, forcing cleanup..."
+        for img in $problematic_images; do
             img=$(echo "$img" | tr -d '[:space:]')
             [[ -z "$img" ]] && continue
-            echo "      Force disabling mirroring and removing error image: $img"
+            echo "      Force disabling mirroring and removing image: $img"
             kubectl exec -n rook-ceph --context=$cluster deploy/rook-ceph-tools -- \
                 rbd mirror image disable --force $POOL_NAME/$img 2>/dev/null || true
             # Wait a moment for mirroring to fully stop
@@ -57,6 +64,11 @@ cleanup_cluster_images() {
     
     if [[ -z "$images" ]]; then
         echo "  All images cleaned up during error state handling"
+        return 0
+    fi
+
+    if [[ "$ERROR_STATE_ONLY" == "true" ]]; then
+        echo "  (--error-state-only: skipping full cleanup, $(echo "$images" | wc -l) image(s) remain)"
         return 0
     fi
 

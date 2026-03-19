@@ -2,7 +2,13 @@
 # SPDX-FileCopyrightText: The RamenDR authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Utility functions for Kubernetes resource management
+# Utility functions for Kubernetes resource management and test scripts.
+# Sources scripts/utils.sh for init_logging, start_capture_logging, end_logging.
+
+_TEST_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_ROOT="$(cd "$_TEST_UTILS_DIR/../.." && pwd)"
+# shellcheck source=../../scripts/utils.sh
+source "$_REPO_ROOT/scripts/utils.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -188,6 +194,73 @@ get_deployment_ready_replicas() {
     local deployment_name=$3
     
     kubectl --context="$context" get deployment "$deployment_name" -n "$namespace" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0"
+}
+
+# CSI Replication cleanup functions (patch finalizers, then delete)
+# Use for VolumeReplication, VolumeGroupReplication, PVC - resources that may have blocking finalizers
+
+# Delete a single VolumeReplication: patch to remove finalizers, then delete
+# Usage: csi_cleanup_volumereplication <context> <namespace> <vr_name>
+csi_cleanup_volumereplication() {
+    local context=$1
+    local namespace=$2
+    local vr_name=$3
+    kubectl --context="$context" patch volumereplication "$vr_name" -n "$namespace" --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+    kubectl --context="$context" delete volumereplication "$vr_name" -n "$namespace" --ignore-not-found=true --wait=false 2>/dev/null || true
+}
+
+# Delete all VolumeReplication resources in a namespace (e.g. VGR-created VRs with generated names)
+# Usage: csi_cleanup_volumereplications_in_namespace <context> <namespace>
+csi_cleanup_volumereplications_in_namespace() {
+    local context=$1
+    local namespace=$2
+    local vr_name
+    for vr_name in $(kubectl --context="$context" get volumereplication -n "$namespace" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        [[ -z "$vr_name" ]] && continue
+        csi_cleanup_volumereplication "$context" "$namespace" "$vr_name"
+    done
+}
+
+# Delete VolumeGroupReplication: patch to remove finalizers, then delete
+# Usage: csi_cleanup_volumegroupreplication <context> <namespace> <vgr_name>
+csi_cleanup_volumegroupreplication() {
+    local context=$1
+    local namespace=$2
+    local vgr_name=$3
+    kubectl --context="$context" patch volumegroupreplication "$vgr_name" -n "$namespace" --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+    kubectl --context="$context" delete volumegroupreplication "$vgr_name" -n "$namespace" --ignore-not-found=true --wait=false 2>/dev/null || true
+}
+
+# Delete all VolumeGroupReplicationContent resources (cluster-scoped)
+# Patches finalizers before delete to avoid stuck Terminating state.
+# Usage: csi_cleanup_volumegroupreplicationcontents <context>
+csi_cleanup_volumegroupreplicationcontents() {
+    local context=$1
+    local vgrc vgrc_name
+    for vgrc in $(kubectl --context="$context" get volumegroupreplicationcontent -o name 2>/dev/null); do
+        [[ -z "$vgrc" ]] && continue
+        vgrc_name="${vgrc#volumegroupreplicationcontent/}"
+        kubectl --context="$context" patch volumegroupreplicationcontent "$vgrc_name" --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+        kubectl --context="$context" delete "$vgrc" --ignore-not-found=true --wait=false 2>/dev/null || true
+    done
+}
+
+# Delete a PVC: patch to remove finalizers, then delete
+# Usage: csi_cleanup_pvc <context> <namespace> <pvc_name>
+csi_cleanup_pvc() {
+    local context=$1
+    local namespace=$2
+    local pvc_name=$3
+    kubectl --context="$context" patch pvc "$pvc_name" -n "$namespace" --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+    kubectl --context="$context" delete pvc "$pvc_name" -n "$namespace" --ignore-not-found=true 2>/dev/null || true
+}
+
+# Delete a namespace
+# Usage: csi_cleanup_namespace <context> <namespace>
+csi_cleanup_namespace() {
+    local context=$1
+    local namespace=$2
+    kubectl --context="$context" delete namespace "$namespace" --ignore-not-found=true --wait=false 2>/dev/null || true
 }
 
 # Cleanup functions

@@ -38,4 +38,8 @@ kubectl --context=dr2 wait --for=condition=available deployment/csi-cephfsplugin
 echo "Applying post-start configuration fixes..."
 ./scripts/setup-csi-storage-resources.sh
 
+echo "Applying CSI Addons fixes (versions + TLS) for VolumeReplication connectivity..."
+./scripts/fix-csi-addons-versions.sh
+./scripts/fix-csi-addons-tls.sh
+
 echo "✅ CSI replication clusters started and configured successfully"

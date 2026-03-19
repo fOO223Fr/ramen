@@ -41,8 +41,10 @@ for context in dr1 dr2; do
     fi
 
     # --- CSI Sidecar TLS (csi-addons containers only) ---
-    CSI_ADDONS_PATCH='{"spec":{"template":{"spec":{"containers":[{"name":"csi-addons","args":["-node-id=$(NODE_ID)","-csi-addons-address=$(CSIADDONS_ENDPOINT)","-controller-port=9070","-pod=$(POD_NAME)","-namespace=$(POD_NAMESPACE)","-pod-uid=$(POD_UID)"]}]}}}}'
-    echo "  Fixing CSI sidecar TLS..."
+    # Include leader-election args so we don't overwrite/strip them (required for VGR "no leader" fix)
+    # Staging path matches Rook default; leader-election uses shorter durations for faster recovery
+    CSI_ADDONS_PATCH='{"spec":{"template":{"spec":{"containers":[{"name":"csi-addons","args":["--node-id=$(NODE_ID)","--csi-addons-address=$(CSIADDONS_ENDPOINT)","--controller-port=9070","--pod=$(POD_NAME)","--namespace=$(POD_NAMESPACE)","--pod-uid=$(POD_UID)","--stagingpath=/var/lib/kubelet/plugins/kubernetes.io/csi/","--leader-election-namespace=$(POD_NAMESPACE)","--leader-election-lease-duration=15s","--leader-election-renew-deadline=10s","--leader-election-retry-period=2s"]}]}}}}'
+    echo "  Fixing CSI sidecar TLS (preserving leader-election args)..."
 
     # csi-rbdplugin-provisioner: csi-addons, csi-rbdplugin, log-collector (by name)
     if kubectl --context=$context get deployment csi-rbdplugin-provisioner -n rook-ceph &>/dev/null; then
@@ -112,6 +114,13 @@ for context in dr1 dr2; do
     kubectl --context=$context delete pods -n rook-ceph -l app=csi-cephfsplugin-provisioner --ignore-not-found=true 2>/dev/null || true
     kubectl --context=$context delete pods -n rook-ceph -l app=csi-cephfsplugin --ignore-not-found=true 2>/dev/null || true
     kubectl --context=$context delete pods -n rook-ceph -l app=csi-rbdplugin --ignore-not-found=true 2>/dev/null || true
+done
+
+# Wait for CSI provisioner pods to be ready (avoids FailedScheduling on single-node due to anti-affinity)
+echo "Waiting for CSI plugin pods to be ready..."
+for context in dr1 dr2; do
+    kubectl --context=$context rollout status deployment/csi-rbdplugin-provisioner -n rook-ceph --timeout=180s 2>/dev/null || echo "  ⚠ csi-rbdplugin-provisioner rollout wait timed out on $context"
+    kubectl --context=$context rollout status deployment/csi-cephfsplugin-provisioner -n rook-ceph --timeout=180s 2>/dev/null || echo "  ⚠ csi-cephfsplugin-provisioner rollout wait timed out on $context"
 done
 
 echo ""

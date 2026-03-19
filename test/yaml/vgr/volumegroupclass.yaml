@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# VolumeGroupClass - driver config for VolumeGroup (CSI CreateVolumeGroup)
+# Placeholders: VGCLASS_NAME
+apiVersion: volumegroup.storage.openshift.io/v1
+kind: VolumeGroupClass
+metadata:
+  name: ${VGCLASS_NAME}
+spec:
+  driver: rook-ceph.rbd.csi.ceph.com
+  parameters:
+    clusterID: rook-ceph
+    pool: replicapool

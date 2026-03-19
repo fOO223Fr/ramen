@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# VGR test - DR2 failover static PV + PVC
+# Placeholders: VGR_DR2_PV_NAME, VGR_NAMESPACE, VGR_PVC_NAME, VGR_STORAGE_SIZE,
+#   VGR_DR2_CLUSTER_ID, VGR_RBD_IMAGE_NAME, VGR_VOLUME_HANDLE, VGR_STORAGE_CLASS, VGR_POOL
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${VGR_DR2_PV_NAME}
+spec:
+  accessModes: [ReadWriteOnce]
+  capacity:
+    storage: ${VGR_STORAGE_SIZE}
+  csi:
+    driver: rook-ceph.rbd.csi.ceph.com
+    fsType: ext4
+    nodeStageSecretRef:
+      name: rook-csi-rbd-node
+      namespace: rook-ceph
+    volumeAttributes:
+      clusterID: "${VGR_DR2_CLUSTER_ID}"
+      imageFeatures: layering
+      imageName: ${VGR_RBD_IMAGE_NAME}
+      journalPool: replicapool
+      pool: ${VGR_POOL}
+    volumeHandle: ${VGR_VOLUME_HANDLE}
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ${VGR_STORAGE_CLASS}
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${VGR_PVC_NAME}
+  namespace: ${VGR_NAMESPACE}
+  labels:
+    app: vgr-test
+    replication-group: test
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: ${VGR_STORAGE_SIZE}
+  storageClassName: ${VGR_STORAGE_CLASS}
+  volumeName: ${VGR_DR2_PV_NAME}

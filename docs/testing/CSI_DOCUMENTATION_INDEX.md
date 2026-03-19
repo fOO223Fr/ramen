@@ -81,6 +81,24 @@ This page indexes all documentation created for the CSI provisioner fixes.
 
 ---
 
+### [csi-replication-methods-and-status.md](./csi-replication-methods-and-status.md)
+**For:** Understanding CSI replication methods and their status
+- Flow of each method (single VR, VolumeGroup+VR, VolumeGroupReplication)
+- Expected test flow design for each method
+- Adoption/support status across vendors (Ceph, IBM, Dell)
+- Footnote on RamenDR VRG (proprietary, not CSI)
+
+---
+
+### [VGR-NO-LEADER-FIX-GUIDE.md](./VGR-NO-LEADER-FIX-GUIDE.md)
+**For:** Fixing VolumeGroupReplication "no leader for the ControllerService" errors
+- Root cause (CSIAddonsNode for controller vs daemonset)
+- Problem vs fixed state, diagnostic commands
+- Immediate fix (restart, project scripts)
+- Permanent configuration options (CephCluster patch, monitoring CronJob)
+
+---
+
 ## 🎯 Quick Navigation by Question
 
 ### "How do I get everything working?"
@@ -100,6 +118,12 @@ This page indexes all documentation created for the CSI provisioner fixes.
 
 ### "I need to understand the whole setup"
 → [SetupCSICluster.md](./SetupCSICluster.md)
+
+### "What are the CSI replication methods and their status?"
+→ [csi-replication-methods-and-status.md](./csi-replication-methods-and-status.md)
+
+### "VGR fails with 'no leader for the ControllerService'"
+→ [VGR-NO-LEADER-FIX-GUIDE.md](./VGR-NO-LEADER-FIX-GUIDE.md)
 
 ---
 
@@ -187,6 +211,9 @@ make test-csi-failover
 **"I need to understand flag formats"**
 → See "CSI Component Architecture" in [CSI_PROVISIONER_FIXES.md](./CSI_PROVISIONER_FIXES.md)
 
+**"VolumeGroupReplication stuck with 'no leader' error"**
+→ [VGR-NO-LEADER-FIX-GUIDE.md](./VGR-NO-LEADER-FIX-GUIDE.md)
+
 ---
 
 ## 📁 File Structure
@@ -195,6 +222,7 @@ make test-csi-failover
 docs/testing/
 ├── CSI_FIXES_QUICK_REFERENCE.md         ← Start here
 ├── CSI_PROVISIONER_FIXES.md             ← Deep dive
+├── VGR-NO-LEADER-FIX-GUIDE.md           ← VGR "no leader" fix
 ├── CSI_IMPLEMENTATION_SUMMARY.md        ← Overview
 ├── CSI_CHANGES_EXPLAINED.md             ← Change details
 ├── CSI_DOCUMENTATION_INDEX.md           ← This file

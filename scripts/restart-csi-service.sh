@@ -172,17 +172,29 @@ restart_csi_addons_controller() {
     echo ""
 }
 
-# Verify fix by checking if VolumeReplication can find the driver
+# Verify fix by checking CSIAddonsNode and controller logs
 verify_fix() {
     local context="$1"
     
     echo -e "${BLUE}=== Verifying Fix on $context ===${NC}"
     
+    # Check for controller CSIAddonsNode (required for VGR/VR; deployment provisioner, not just daemonset)
+    local rbd_controller_nodes
+    rbd_controller_nodes=$(kubectl --context=$context get csiaddonsnode -A -o name 2>/dev/null | grep -c "csi-rbdplugin-provisioner" || echo "0")
+    if [ "${rbd_controller_nodes:-0}" -eq 0 ]; then
+        echo -e "${YELLOW}⚠️  No CSIAddonsNode for RBD controller (deployment) - VGR/VR may fail with 'no leader'${NC}"
+        echo "    CSIAddonsNode resources:"
+        kubectl --context=$context get csiaddonsnode -A 2>/dev/null | head -10 || echo "  (none found)"
+    else
+        echo -e "${GREEN}✓ RBD controller CSIAddonsNode present${NC}"
+    fi
+    
     # Check for recent "no leader" errors
-    local errors=$(kubectl --context=$context -n csi-addons-system logs deployment/csi-addons-controller-manager \
+    local errors
+    errors=$(kubectl --context=$context -n csi-addons-system logs deployment/csi-addons-controller-manager \
         --tail=100 2>/dev/null | grep -c "no leader for the ControllerService" || echo "0")
     
-    if [ "$errors" -gt "0" ]; then
+    if [ "${errors:-0}" -gt "0" ]; then
         echo -e "${YELLOW}⚠️  Still seeing leader errors (count: $errors in recent logs)${NC}"
         echo "    This may take a few moments to resolve..."
         return 1

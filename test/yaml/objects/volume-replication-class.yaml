@@ -9,6 +9,7 @@ spec:
     replication.storage.openshift.io/replication-secret-namespace: rook-ceph
     mirroringMode: snapshot
     schedulingInterval: "2m"
+    flattenMode: "force"
 ---
 apiVersion: replication.storage.openshift.io/v1alpha1
 kind: VolumeReplicationClass
@@ -21,3 +22,4 @@ spec:
     replication.storage.openshift.io/replication-secret-namespace: rook-ceph
     mirroringMode: snapshot
     schedulingInterval: "5m"
+    flattenMode: "force"

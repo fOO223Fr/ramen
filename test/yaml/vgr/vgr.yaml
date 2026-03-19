@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# VGR test - VolumeGroupReplication
+# Placeholders: VGR_NAMESPACE, VGR_NAME, VGRCLASS_NAME, VRC_NAME
+apiVersion: replication.storage.openshift.io/v1alpha1
+kind: VolumeGroupReplication
+metadata:
+  name: ${VGR_NAME}
+  namespace: ${VGR_NAMESPACE}
+spec:
+  volumeGroupReplicationClassName: ${VGRCLASS_NAME}
+  volumeReplicationClassName: ${VRC_NAME}
+  replicationState: primary
+  autoResync: true
+  source:
+    selector:
+      matchLabels:
+        app: vgr-test
+        replication-group: test

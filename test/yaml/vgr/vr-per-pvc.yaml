@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# VolumeReplication per-PVC template for group replication test.
+# Uses VolumeReplication CRD (not VolumeGroupReplication) - compatible with ceph-csi.
+# Placeholders: VR_NAMESPACE, VR_NAME, VR_PVC_NAME, VRC_NAME
+apiVersion: replication.storage.openshift.io/v1alpha1
+kind: VolumeReplication
+metadata:
+  name: ${VR_NAME}
+  namespace: ${VR_NAMESPACE}
+spec:
+  volumeReplicationClass: ${VRC_NAME}
+  dataSource:
+    kind: PersistentVolumeClaim
+    name: ${VR_PVC_NAME}
+  replicationState: primary
+  autoResync: true

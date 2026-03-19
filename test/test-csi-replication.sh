@@ -3,8 +3,9 @@
 
 set -e  # Exit on error
 
-# Initialize logging
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/utils.sh"
+# Initialize logging and cleanup utilities
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/scripts/utils.sh"
 init_logging "test-csi-replication"
 start_capture_logging
 
@@ -12,10 +13,8 @@ echo "=== CSI Replication Health Check ==="
 
 echo "0. Cleaning up any previous test resources..."
 set +e
-kubectl --context=dr1 patch volumereplication test-volume-replication --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
-kubectl --context=dr1 delete volumereplication test-volume-replication --ignore-not-found=true
-kubectl --context=dr1 patch pvc test-replication-pvc --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
-kubectl --context=dr1 delete pvc test-replication-pvc --ignore-not-found=true
+csi_cleanup_volumereplication dr1 default test-volume-replication
+csi_cleanup_pvc dr1 default test-replication-pvc
 set -e
 echo ""
 
@@ -249,11 +248,9 @@ echo ""
 echo "=== Cleanup ==="
 set +e
 echo "Removing VolumeReplication..."
-kubectl --context=dr1 patch volumereplication test-volume-replication --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
-kubectl --context=dr1 delete volumereplication test-volume-replication --ignore-not-found=true
+csi_cleanup_volumereplication dr1 default test-volume-replication
 echo "Removing PVC..."
-kubectl --context=dr1 patch pvc test-replication-pvc --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null || true
-kubectl --context=dr1 delete pvc test-replication-pvc --ignore-not-found=true
+csi_cleanup_pvc dr1 default test-replication-pvc
 rm -f /tmp/test-pvc.yaml /tmp/test-volrep.yaml
 echo "Cleanup complete"
 

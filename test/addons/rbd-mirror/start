@@ -19,7 +19,7 @@ from drenv import commands
 from drenv import kubectl
 
 POOL_NAME = "replicapool"
-VRC_INTERVALS = ["1m", "5m"]
+VRC_INTERVALS = ["1m", "2m", "5m"]  # vgrc-2m required by test-csi-volumegroupreplication
 
 
 def log_blocklist(cluster):
@@ -118,6 +118,17 @@ def configure_rbd_mirroring(cluster, peer_info):
         template = drenv.template("start-data/vrc.yaml")
         yaml = template.substitute(
             cluster=cluster, scname="rook-ceph-block", interval=interval
+        )
+        kubectl.apply("--filename=-", input=yaml, context=cluster)
+
+    for interval in VRC_INTERVALS:
+        print(f"Creating VolumeGroupReplicationClass vgrc-{interval}")
+        template = drenv.template("start-data/vgrc.yaml")
+        yaml = template.substitute(
+            cluster=cluster,
+            scname="rook-ceph-block",
+            interval=interval,
+            pool=POOL_NAME,
         )
         kubectl.apply("--filename=-", input=yaml, context=cluster)
 

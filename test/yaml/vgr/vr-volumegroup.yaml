@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# VolumeReplication with dataSource.kind=VolumeGroup
+# References the VolumeGroup (controller resolves to volume_group_id for EnableVolumeReplication)
+# Placeholders: VR_NAMESPACE, VR_NAME, VG_NAME, VRC_NAME
+apiVersion: replication.storage.openshift.io/v1alpha1
+kind: VolumeReplication
+metadata:
+  name: ${VR_NAME}
+  namespace: ${VR_NAMESPACE}
+spec:
+  replicationState: primary
+  dataSource:
+    apiGroup: volumegroup.storage.openshift.io
+    kind: VolumeGroup
+    name: ${VG_NAME}
+  volumeReplicationClass: ${VRC_NAME}
+  autoResync: true

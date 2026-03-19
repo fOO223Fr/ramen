@@ -4,6 +4,8 @@ This guide covers setting up and testing CSI volume replication functionality us
 
 > **Relationship to RamenDR tests:** These tests are **CSI replication testing additions** – scripts added in forks or branches for CSI-specific replication. They are distinct from the upstream RamenDR tests (basic test, E2E, addon tests) described in [RamenDRTests.md](./RamenDRTests.md#what-this-document-covers). See the "CSI replication testing additions" bullet in that document.
 
+> **Replication methods reference:** For a detailed explanation of each CSI replication method (single VR, VolumeGroup+VR, VolumeGroupReplication), their flows, expected test design, and adoption status, see [CSI Replication Methods and Status](./csi-replication-methods-and-status.md).
+
 ## Test Scenario Map
 
 The following scripts cover CSI replication scenarios. Use this map to choose which test to run for a given scenario:
@@ -13,6 +15,8 @@ The following scripts cover CSI replication scenarios. Use this map to choose wh
 | **Infrastructure validation** | [`test/test-csi-replication.sh`](../../test/test-csi-replication.sh) | `make test-csi-replication` | CSI Addons controller, VolumeReplicationClass, StorageClass; PVC creation; VolumeReplication (primary); RBD mirror status; cross-cluster image verification |
 | **Volume state transitions** | [`test/test-csi-failover.sh`](../../test/test-csi-failover.sh) | `make test-csi-failover` | Demote (primary → secondary); promote (secondary → primary); failback; VR state validation; RBD mirror state across clusters |
 | **Full DR failover flow** | [`test/test-dr-flow.sh`](../../test/test-dr-flow.sh) | `make test-dr-flow` | Primary workload on DR1 with RBD mirroring; failover to DR2; K8s object (PVC/VR) recreation on DR2; application access to replicated data |
+| **VolumeGroupReplication (VGR)** | [`test/test-csi-volumegroupreplication.sh`](../../test/test-csi-volumegroupreplication.sh) | `make test-csi-volumegroupreplication` | Validate VolumeGroupReplication. One VGR CR with source.selector; controller creates VGRC and per-volume VRs. Requires CSI Addons v0.13+. |
+| **VolumeGroupEnableReplication** | [`test/test-csi-volumegroup-enablereplication.sh`](../../test/test-csi-volumegroup-enablereplication.sh) | `make test-csi-volumegroup-enablereplication` | Validate VolumeGroup + VolumeReplication. (1) VolumeGroup via CSI CreateVolumeGroup, (2) VolumeReplication with dataSource.kind=VolumeGroup. **Blocked:** requires VolumeGroup CRD/controller from kubernetes-csi-addons PR #402 fork. |
 
 ### Quick Reference
 
@@ -21,6 +25,8 @@ The following scripts cover CSI replication scenarios. Use this map to choose wh
 | Validate replication setup | `make test-csi-replication` |
 | Test demote/promote | `make test-csi-failover` |
 | Test complete DR failover | `make test-dr-flow` |
+| Validate VolumeGroupReplication (VGR) | `make test-csi-volumegroupreplication` |
+| Validate VolumeGroupEnableReplication (blocked) | `make test-csi-volumegroup-enablereplication` |
 
 ---
 
@@ -48,6 +54,8 @@ This command automatically:
 - ✅ Creates Volume Replication Classes (`vrc-1m`, `vrc-5m`)
 - ✅ Configures cross-cluster RBD mirroring
 - ✅ Validates all components are working
+
+**Fast reset (clusters already running):** Use `make reset-csi-replication-state` (~2-5 min) to clean test resources and re-apply storage + RBD mirroring without full setup.
 
 ### 2. Run Tests
 
@@ -262,6 +270,39 @@ spec:
 EOF
 ```
 
+### Capability Check Script
+
+The script `scripts/check_cluster_csi_capabilities.sh` (renamed from `check_networkfence.sh`) detects cluster capabilities for CSI replication. Use `--mode` to select checks:
+
+| Mode | Description |
+|------|-------------|
+| `networkfence` (default) | NetworkFence CRDs, CSIAddonsNode, NetworkFence RPC capabilities |
+| `replication` | VolumeReplication CRD, VolumeReplicationClass CRD, CSIAddonsNode capability for replication |
+| `volumegroupreplication` | VGR/VGRC/VGRClass CRDs, replication capability, VolumeGroupReplication capability in CSIAddonsNode |
+| `all` | All of the above |
+
+```bash
+# Check network fence (default)
+./scripts/check_cluster_csi_capabilities.sh
+
+# Check CSI replication addon
+./scripts/check_cluster_csi_capabilities.sh --mode replication
+
+# Check VolumeGroupReplication support
+./scripts/check_cluster_csi_capabilities.sh --mode volumegroupreplication
+
+# Check all capabilities
+./scripts/check_cluster_csi_capabilities.sh --mode all
+```
+
+### CRD and Controller Source
+
+VolumeReplication and VolumeGroupReplication CRDs come from **kubernetes-csi-addons**, not from Ceph or Rook.
+
+- **Rook PR #10777** (Sept 2022): Rook removed the volume replication sidecar and CRDs from its build. Users must install CRDs from kubernetes-csi-addons.
+- **Ceph CSI driver** still supports replication via gRPC APIs; the CRDs and controller come from kubernetes-csi-addons.
+- If CRDs are missing, install from kubernetes-csi-addons (e.g. `deploy/controller/crds.yaml` or equivalent from release manifests).
+
 ### Scenario 3: Application with Replicated Storage
 
 ```bash
@@ -301,16 +342,55 @@ kubectl --context=dr1 exec deploy/test-app -- tail /data/log.txt
 # (after failover, the data should be available)
 ```
 
+### Scenario 4: Group Replication (VolumeGroup + VolumeReplication)
+
+**Context:** Uses VolumeGroup (not VolumeGroupReplication) and VolumeReplication. Flow: (1) Create VolumeGroup via CSI CreateVolumeGroup, (2) Create VolumeReplication with dataSource.kind=VolumeGroup. Ceph-csi implements VolumeGroupServer and VolumeReplicationServer (with volumegroup support).
+
+**Target approach:** VolumeGroup CRD + VolumeReplication with dataSource.kind=VolumeGroup.
+
+#### Test Flow
+
+| Step | Action |
+|------|--------|
+| 1 | Create PVCs with labels (app: vgr-test, replication-group: test) |
+| 2 | Create VolumeGroup with source.selector matching those labels |
+| 3 | VolumeGroup controller: CreateVolumeGroup via CSI → status.boundVolumeGroupContentName |
+| 4 | Create VolumeReplication with dataSource.kind=VolumeGroup, dataSource.name=<VolumeGroup name> |
+| 5 | Wait for VolumeReplication Primary state |
+| 6 | Failover: demote VR, create PVs/PVCs on DR2, create VolumeGroup + VolumeReplication on DR2 |
+
+#### Key Requirements
+
+- VolumeGroup CRD (volumegroup.storage.openshift.io) - from kubernetes-csi-addons PR #402 (closed) or fork
+- VolumeReplication with dataSource.apiGroup=volumegroup.storage.openshift.io, dataSource.kind=VolumeGroup
+- VolumeGroup controller must be deployed (from kubernetes-csi-addons fork with add_volume_group_controller branch)
+
+#### Example VolumeReplication
+
+```yaml
+apiVersion: replication.storage.openshift.io/v1alpha1
+kind: VolumeReplication
+spec:
+  replicationState: primary
+  dataSource:
+    apiGroup: volumegroup.storage.openshift.io
+    kind: VolumeGroup
+    name: "volume-group-name"
+  volumeReplicationClassName: "rbd-volumereplicationclass"
+  autoResync: true
+```
+
 ## Environment Management
 
 ### Available Make Targets
 
 ```bash
 # Setup and management
-make setup-csi-replication      # Complete environment setup
-make start-csi-replication      # Start existing clusters  
-make stop-csi-replication       # Stop clusters (keep VMs)
-make delete-csi-replication     # Delete clusters completely
+make setup-csi-replication         # Complete environment setup (20-30 min)
+make start-csi-replication        # Start existing clusters
+make reset-csi-replication-state  # Fast reset (~2-5 min): clean VRs/VGRs/PVCs, re-apply storage + RBD mirroring
+make stop-csi-replication         # Stop clusters (keep VMs)
+make delete-csi-replication       # Delete clusters completely
 
 # Configuration and fixes
 make fix-csi-addons-tls         # Apply TLS configuration fixes
@@ -318,7 +398,9 @@ make setup-csi-storage-resources # Setup storage classes and VRCs
 
 # Testing and status
 make test-csi-replication       # Run replication tests
+make test-csi-volumegroupreplication  # Validate VolumeGroupReplication (VGR)
 make status-csi-replication     # Check cluster status
+make check-csi-capabilities     # Check cluster CSI capabilities (mode: all)
 ```
 
 ### Advanced Setup Options
@@ -372,7 +454,80 @@ kubectl --context=dr1 -n rook-ceph exec -it deploy/rook-ceph-tools -- \
   rbd mirror pool status replicapool
 ```
 
-#### 4. Cleanup Issues (Finalizers)
+#### 4. VolumeReplication: Unknown State / "image not found"
+
+If VolumeReplication resources show `Unknown` state with "image not found" or "rbd: ret=-2, No such file or directory":
+
+- **VolumeReplicationClass**: Ensure `rbd-volumereplicationclass` exists with `mirroringMode: snapshot` and `schedulingInterval` (e.g. 2m). Run `make setup-csi-storage-resources` if needed.
+- **RBD metadata**: Allow 30s after PVC creation before creating VRs. The test script includes this wait.
+- **Re-run setup**: Run `make reset-csi-replication-state` and retry.
+
+#### 4b. VolumeReplication / VGR: Empty State / "no leader for the ControllerService"
+
+If VR or VGR state is empty and CSI Addons logs show "no leader for the ControllerService of driver rook-ceph.rbd.csi.ceph.com":
+
+**Root cause:** The CSI Addons controller cannot reach the RBD sidecar. The controller needs a CSIAddonsNode for the **deployment** (csi-rbdplugin-provisioner), not just the daemonset. When only the daemonset CSIAddonsNode exists, the controller has no CONTROLLER_SERVICE/VolumeGroup capability.
+
+**Fix:** The reset script now waits up to 45s for the sidecar leader and restarts the CSI Addons controller to force reconnection. If you still see the error:
+
+```bash
+make restart-csi-service   # Forces leader re-election and controller reconnection
+make test-csi-volumegroupreplication
+```
+
+**Recommended flow:** `make reset-csi-replication-state && make test-csi-volumegroupreplication` (reset includes controller restart now).
+
+**Detailed guide:** See [VGR No Leader Fix Guide](./VGR-NO-LEADER-FIX-GUIDE.md) for full diagnostic steps, expected vs problem state, and architecture context.
+
+#### 5. DR Flow: VR Never Reaches Primary on DR2
+
+If `test-dr-flow` fails at step 17 (VolumeReplication on DR2 stays empty) and CSI Addons logs show "no leader for the ControllerService" or "no connection":
+
+**Root cause:** The csi-addons addon was switched from the cg-support fork (Nikhil-Ladha) back to official kubernetes-csi-addons. The cg-support fork broke single VolumeReplication flow. `make reset-csi-replication-state` and `make start-csi-replication` now run fix-csi-addons-versions and fix-csi-addons-tls automatically.
+
+```bash
+make fix-csi-addons-tls
+make restart-csi-service
+make reset-csi-replication-state
+make test-dr-flow
+```
+
+#### 6. Mirroring Health WARNING (1 unknown)
+
+If `image_health: WARNING` and `states: {'unknown': 1}` block setup or tests:
+
+```bash
+# Clean all mirrored images (removes unknown/error state)
+make cleanup-replicated-images
+
+# Or run full reset
+make reset-csi-replication-state
+```
+
+The `test-dr-flow` cleanup now runs `cleanup-replicated-images` automatically to avoid leaving orphaned images.
+
+#### 7. VR Degraded / "mirroring is not enabled" / "failed to get last sync info"
+
+If VolumeReplication shows Degraded or briefly "mirroring is not enabled":
+
+- **flattenMode**: The VRC now includes `flattenMode: force` to handle parent images. Run `make reset-csi-replication-state` to pick up the updated VRC.
+- **Check CSI logs** (from project root):
+  ```bash
+  # CSI Addons controller
+  kubectl --context=dr1 logs -n csi-addons-system deploy/csi-addons-controller-manager --tail=100
+  kubectl --context=dr2 logs -n csi-addons-system deploy/csi-addons-controller-manager --tail=100
+
+  # csi-addons and csi-rbdplugin containers (replication/mirroring)
+  RBD_POD=$(kubectl --context=dr1 get pods -n rook-ceph -l app=csi-rbdplugin-provisioner -o jsonpath='{.items[0].metadata.name}')
+  kubectl --context=dr1 logs -n rook-ceph $RBD_POD -c csi-addons --tail=80
+  kubectl --context=dr1 logs -n rook-ceph $RBD_POD -c csi-rbdplugin --tail=80 | grep -iE "mirror|replicat|error"
+  ```
+- **RBD mirror pool status**:
+  ```bash
+  kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool --verbose
+  ```
+
+#### 8. Cleanup Issues (Finalizers)
 ```bash
 # Remove finalizers if resources stuck
 kubectl --context=dr1 patch volumereplication <name> \

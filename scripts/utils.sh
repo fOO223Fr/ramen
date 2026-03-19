@@ -76,7 +76,8 @@ init_logging() {
     }
 }
 
-# Capture all output (stdout and stderr) to both terminal and log file
+# Capture all output (stdout and stderr) to both terminal and log file.
+# Strips ANSI escape codes (colors) when writing to the log file for readability.
 # Usage: start_capture_logging
 #   Call this after init_logging() to enable tee-ing to log file
 #
@@ -87,8 +88,8 @@ start_capture_logging() {
         return 1
     fi
     
-    # Use tee to capture both stdout and stderr
-    exec 1> >(tee -a "$LOGFILE")
+    # Tee to terminal (with colors) and to file (ANSI codes stripped)
+    exec 1> >(tee >(sed 's/\x1b\[[0-9;]*m//g' >> "$LOGFILE"))
     exec 2>&1
 }
 

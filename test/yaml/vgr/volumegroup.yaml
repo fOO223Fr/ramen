@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# VolumeGroup - creates volume group via CSI CreateVolumeGroup
+# Placeholders: VG_NAMESPACE, VG_NAME, VGCLASS_NAME
+# Selector matches PVCs with labels app: vgr-test, replication-group: test
+apiVersion: volumegroup.storage.openshift.io/v1
+kind: VolumeGroup
+metadata:
+  name: ${VG_NAME}
+  namespace: ${VG_NAMESPACE}
+spec:
+  volumeGroupClassName: ${VGCLASS_NAME}
+  source:
+    selector:
+      matchLabels:
+        app: vgr-test
+        replication-group: test

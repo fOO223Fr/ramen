@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: The RamenDR authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# VGR test - PersistentVolumeClaim template
+# Placeholders: VGR_NAMESPACE, VGR_PVC_NAME, VGR_STORAGE_CLASS, VGR_STORAGE_SIZE
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${VGR_PVC_NAME}
+  namespace: ${VGR_NAMESPACE}
+  labels:
+    app: vgr-test
+    replication-group: test
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: ${VGR_STORAGE_SIZE}
+  storageClassName: ${VGR_STORAGE_CLASS}

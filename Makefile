@@ -186,6 +186,10 @@ reset-csi-replication: ## Reset CSI Replication environment for clean setup (del
 	-$(MAKE) clean-local-registry 2>/dev/null || true
 	@echo "✅ Environment reset complete. Ready for fresh setup."
 
+.PHONY: reset-csi-replication-state
+reset-csi-replication-state: ## Fast reset of CSI replication state (~2-5 min). Assumes dr1/dr2 clusters running. Cleans VRs/VGRs/PVCs, re-applies storage + RBD mirroring.
+	./scripts/reset-csi-replication-state.sh
+
 .PHONY: fix-csi-provisioners
 fix-csi-provisioners: ## Apply container image and flag format fixes to CSI provisioner deployments (required for Ceph CSI compatibility).
 	./scripts/fix-csi-provisioners.sh
@@ -314,6 +318,18 @@ test-dr-flow: ## Run complete DR failover flow test with K8s object recreation o
 	test/test-dr-flow.sh 2>&1 | tee $$LOGFILE; \
 	echo ""; \
 	echo "Log saved to $$LOGFILE"
+
+.PHONY: test-csi-volumegroupreplication
+test-csi-volumegroupreplication: ## Validate VolumeGroupReplication (VGR). One VGR CR with source.selector; controller creates VGRC and per-volume VRs. Requires CSI Addons v0.13+.
+	@test/test-csi-volumegroupreplication.sh
+
+.PHONY: test-csi-volumegroup-enablereplication
+test-csi-volumegroup-enablereplication: ## Validate VolumeGroupEnableReplication. (1) VolumeGroup via CSI CreateVolumeGroup, (2) VolumeReplication with dataSource.kind=VolumeGroup. Blocked: requires VolumeGroup CRD/controller from kubernetes-csi-addons PR #402 fork.
+	@test/test-csi-volumegroup-enablereplication.sh
+
+.PHONY: check-csi-capabilities
+check-csi-capabilities: ## Check cluster CSI capabilities. Use CHECK_MODE=all for all checks (default: networkfence).
+	@./scripts/check_cluster_csi_capabilities.sh $(if $(CHECK_MODE),--mode $(CHECK_MODE),)
 
 ##@ Tests
 

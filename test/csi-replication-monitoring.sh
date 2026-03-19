@@ -130,9 +130,23 @@ comprehensive_csi_monitoring() {
     echo ""
     
     echo "🔄 RBD Mirroring Health (DR1):"
-    kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null | head -10 || echo "  Cannot check RBD mirror status on dr1"
+    local rbd_dr1=""
+    rbd_dr1=$(kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null) || true
+    if [[ -n "$rbd_dr1" ]]; then echo "$rbd_dr1" | head -10; else echo "  Cannot check RBD mirror status on dr1"; fi
     echo "🔄 RBD Mirroring Health (DR2):"
-    kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null | head -10 || echo "  Cannot check RBD mirror status on dr2"
+    local rbd_dr2=""
+    rbd_dr2=$(kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool 2>/dev/null) || true
+    if [[ -n "$rbd_dr2" ]]; then echo "$rbd_dr2" | head -10; else echo "  Cannot check RBD mirror status on dr2"; fi
+    # Alert when RBD shows 0 images but VRs exist (indicates orphaned/stale state)
+    local vr_count=0
+    vr_count=$(kubectl --context=dr1 get volumereplication -A --no-headers 2>/dev/null | wc -l)
+    vr_count=$((vr_count + $(kubectl --context=dr2 get volumereplication -A --no-headers 2>/dev/null | wc -l)))
+    if [[ "$vr_count" -gt 0 ]] && echo "$rbd_dr1$rbd_dr2" | grep -q "images: 0 total"; then
+        echo -e "${YELLOW}⚠️  RBD has 0 mirrored images but $vr_count VR(s) exist.${NC}"
+        echo -e "${YELLOW}   If VR CURRENTSTATE is <none>: CSI-Addons may not be reconciling. Try: make fix-csi-addons-tls && make restart-csi-service${NC}"
+        echo -e "${YELLOW}   Otherwise: make reset-csi-replication-state${NC}"
+        echo ""
+    fi
     echo ""
 
     # CSI PODS AND DRIVERS
@@ -167,6 +181,8 @@ comprehensive_csi_monitoring() {
     echo -e "${CYAN}=== CSI REPLICATION COMMANDS ===${NC}"
     echo "🔍 Test CSI replication: make test-csi-replication"
     echo "🔄 Test failover: make test-csi-failover"
+    echo "📦 Test VolumeGroupReplication (VGR): make test-csi-volumegroupreplication"
+    echo "📦 Test VolumeGroupEnableReplication (blocked): make test-csi-volumegroup-enablereplication"
     echo "💾 Check Ceph health: kubectl --context=dr1 -n rook-ceph exec deployment/rook-ceph-tools -- ceph status"
     echo "🪞 Check RBD images: kubectl --context=dr1 -n rook-ceph exec deployment/rook-ceph-tools -- rbd ls replicapool"
     echo "🔗 Check CSI Addons logs: kubectl --context=dr1 logs -n csi-addons-system deployment/csi-addons-controller-manager -f"
@@ -182,16 +198,114 @@ comprehensive_csi_monitoring() {
     echo ""
 
     # ACTIVE VOLUME REPLICATIONS (moved to bottom for easy detection)
+    # SOURCEKIND: PersistentVolumeClaim = single PVC, VolumeGroupReplication = group (VGR)
     echo -e "${CYAN}=== ACTIVE VOLUME REPLICATIONS ===${NC}"
     echo "🔄 Volume Replications (DR1):"
-    kubectl --context=dr1 get volumereplication -A 2>/dev/null | head -10 || echo "  No active volume replications on dr1"
+    kubectl --context=dr1 get volumereplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,AGE:.metadata.creationTimestamp,VOLUMEREPLICATIONCLASS:.spec.volumeReplicationClass,SOURCEKIND:.spec.dataSource.kind,SOURCENAME:.spec.dataSource.name,DESIREDSTATE:.spec.replicationState,CURRENTSTATE:.status.state 2>/dev/null | head -15 || echo "  No active volume replications on dr1"
     echo "  Detailed Status:"
     kubectl --context=dr1 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.state}{"|"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"|"}{.status.message}{"\n"}{end}' 2>/dev/null | sed 's/|/  /g' || true
     echo ""
     echo "🔄 Volume Replications (DR2):"
-    kubectl --context=dr2 get volumereplication -A 2>/dev/null | head -10 || echo "  No active volume replications on dr2"
+    kubectl --context=dr2 get volumereplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,AGE:.metadata.creationTimestamp,VOLUMEREPLICATIONCLASS:.spec.volumeReplicationClass,SOURCEKIND:.spec.dataSource.kind,SOURCENAME:.spec.dataSource.name,DESIREDSTATE:.spec.replicationState,CURRENTSTATE:.status.state 2>/dev/null | head -15 || echo "  No active volume replications on dr2"
     echo "  Detailed Status:"
     kubectl --context=dr2 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.state}{"|"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"|"}{.status.message}{"\n"}{end}' 2>/dev/null | sed 's/|/  /g' || true
+    echo ""
+
+    # VR ISSUES ALERT - highlight when VRs have problems
+    local vr_issues=""
+    vr_issues=$(kubectl --context=dr1 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.status.state} {.status.message}{"\n"}{end}' 2>/dev/null)
+    vr_issues="$vr_issues$(kubectl --context=dr2 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.status.state} {.status.message}{"\n"}{end}' 2>/dev/null)"
+    # Detect: (1) explicit errors, (2) empty state (CURRENTSTATE <none> = controller not reconciling)
+    local vr_has_issues=false
+    if echo "$vr_issues" | grep -qE "(Unknown|Degraded|not found|error|Error|failed|Failed)"; then
+        vr_has_issues=true
+    fi
+    # VRs with desired state but empty status.state (controller not updating)
+    local vr_empty_state=""
+    vr_empty_state=$(kubectl --context=dr1 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.status.state}{"\n"}{end}' 2>/dev/null | awk '$2=="" || $2=="<none>" {print $1 " (state empty)"}')
+    vr_empty_state="$vr_empty_state$(kubectl --context=dr2 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.status.state}{"\n"}{end}' 2>/dev/null | awk '$2=="" || $2=="<none>" {print $1 " (state empty)"}')"
+    if [[ -n "$vr_empty_state" ]]; then
+        vr_has_issues=true
+    fi
+    if $vr_has_issues; then
+        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${RED}⚠️  VR ISSUES DETECTED - VolumeReplications have problems${NC}"
+        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        if [[ -n "$vr_empty_state" ]]; then
+            echo -e "${YELLOW}VRs with empty state (CURRENTSTATE <none> - controller not reconciling):${NC}"
+            echo "$vr_empty_state" | sed 's/^/  • /'
+            echo -e "${YELLOW}  → CSI-Addons may not be processing VRs. Try: make fix-csi-addons-tls && make restart-csi-service${NC}"
+            echo ""
+        fi
+        if echo "$vr_issues" | grep -qE "(Unknown|Degraded|not found|error|Error|failed|Failed)"; then
+            echo -e "${YELLOW}Problematic VRs:${NC}"
+            echo "$vr_issues" | grep -E "(Unknown|Degraded|not found|error|Error|failed|Failed)" | sed 's/^/  • /'
+            echo ""
+        fi
+        echo -e "${YELLOW}Common causes & fixes:${NC}"
+        echo "  • Empty state: make fix-csi-addons-tls && make restart-csi-service"
+        echo "  • Orphaned VRs from failed tests: make reset-csi-replication-state"
+        echo "  • VRC not found: ensure rbd-volumereplicationclass exists (make start-csi-replication)"
+        echo "  • Image not found: RBD images may have been cleaned; run make reset-csi-replication-state"
+        echo ""
+    fi
+
+    # VOLUME GROUP REPLICATIONS (VGR) - one VGR CR creates VGRC and per-volume VRs via controller
+    echo -e "${CYAN}=== VOLUME GROUP REPLICATIONS (VGR) ===${NC}"
+    echo -e "${YELLOW}Note: VGR uses VolumeGroupReplication CR with source.selector. Controller creates VolumeGroupReplicationContent + per-volume VolumeReplication.${NC}"
+    echo ""
+    echo "📦 VolumeGroupReplications (DR1):"
+    kubectl --context=dr1 get volumegroupreplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,VGRCLASS:.spec.volumeGroupReplicationClassName,VRC:.spec.volumeReplicationClassName,STATE:.status.state 2>/dev/null | head -15 || echo "  No VolumeGroupReplications found on dr1"
+    echo "📦 VolumeGroupReplications (DR2):"
+    kubectl --context=dr2 get volumegroupreplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,VGRCLASS:.spec.volumeGroupReplicationClassName,VRC:.spec.volumeReplicationClassName,STATE:.status.state 2>/dev/null | head -15 || echo "  No VolumeGroupReplications found on dr2"
+    echo ""
+    echo "📋 VolumeGroupReplicationContents (cluster-scoped):"
+    kubectl --context=dr1 get volumegroupreplicationcontent -o custom-columns=NAME:.metadata.name,AGE:.metadata.creationTimestamp,VGRCLASS:.spec.volumeGroupReplicationClassName 2>/dev/null | head -10 || echo "  No VGRCs found"
+    echo ""
+    # VGR empty-state detection: state <none> = controller not reconciling or no leader
+    local vgr_empty=""
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        state=$(echo "$line" | awk '{print $NF}')
+        if [[ -z "$state" ]] || [[ "$state" == "<none>" ]]; then
+            ns_name=$(echo "$line" | awk '{$NF=""; print $0}' | xargs | tr ' ' '/')
+            [[ -n "$ns_name" ]] && vgr_empty="${vgr_empty}${ns_name}"$'\n'
+        fi
+    done < <(kubectl --context=dr1 get volumegroupreplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATE:.status.state --no-headers 2>/dev/null || true)
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        state=$(echo "$line" | awk '{print $NF}')
+        if [[ -z "$state" ]] || [[ "$state" == "<none>" ]]; then
+            ns_name=$(echo "$line" | awk '{$NF=""; print $0}' | xargs | tr ' ' '/')
+            [[ -n "$ns_name" ]] && vgr_empty="${vgr_empty}${ns_name}"$'\n'
+        fi
+    done < <(kubectl --context=dr2 get volumegroupreplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,STATE:.status.state --no-headers 2>/dev/null || true)
+    if [[ -n "$vgr_empty" ]]; then
+        vgr_empty=$(echo "$vgr_empty" | sort -u | grep -v '^$')
+        if [[ -n "$vgr_empty" ]]; then
+            echo -e "${YELLOW}⚠️  VGR with empty state (STATE <none>):${NC}"
+            echo "$vgr_empty" | sed 's/^/  • /'
+            local vgrc_count
+            vgrc_count=$(kubectl --context=dr1 get volumegroupreplicationcontent -o name 2>/dev/null | wc -l)
+            vgrc_count=$((vgrc_count + $(kubectl --context=dr2 get volumegroupreplicationcontent -o name 2>/dev/null | wc -l)))
+            if [[ "${vgrc_count:-0}" -gt 0 ]]; then
+                echo -e "  ${YELLOW}VGRC exists but VGR state empty → controller may lack leader. Run: make restart-csi-service${NC}"
+            else
+                echo -e "  ${YELLOW}No VGRC yet → controller may not be reconciling. Check CSI Addons logs for 'no leader'.${NC}"
+            fi
+            echo ""
+        fi
+    fi
+    echo ""
+    echo -e "${CYAN}=== VOLUME GROUPS (VolumeGroupEnableReplication - blocked) ===${NC}"
+    echo -e "${YELLOW}Note: test-csi-volumegroup-enablereplication uses VolumeGroup + VolumeReplication (blocked, no controller).${NC}"
+    echo ""
+    echo "📦 VolumeGroups (DR1):"
+    kubectl --context=dr1 get volumegroup -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,READY:.status.ready,VGCLASS:.spec.volumeGroupClassName,VGCONTENT:.status.boundVolumeGroupContentName,AGE:.metadata.creationTimestamp 2>/dev/null | head -15 || echo "  No VolumeGroups found on dr1"
+    echo ""
+    echo "📦 VolumeGroups (DR2):"
+    kubectl --context=dr2 get volumegroup -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,READY:.status.ready,VGCLASS:.spec.volumeGroupClassName,VGCONTENT:.status.boundVolumeGroupContentName,AGE:.metadata.creationTimestamp 2>/dev/null | head -15 || echo "  No VolumeGroups found on dr2"
     echo ""
 
     # NETWORK FENCE RESOURCES (moved to bottom for easy detection)
@@ -214,7 +328,7 @@ comprehensive_csi_monitoring() {
 # Wait for refresh interval or key press (space/enter) to refresh immediately
 # Usage: wait_for_refresh [interval_seconds]
 wait_for_refresh() {
-    local interval="${1:-10}"
+    local interval="${1:-20}"
     echo -e "\n${YELLOW}Press Space or Enter to refresh now, or wait ${interval}s...${NC}"
     read -t "$interval" -n 1 -s key || true
 }
@@ -245,8 +359,8 @@ storageclass_monitoring() {
         echo "=== VOLUME SNAPSHOT CLASSES ==="
         kubectl --context=dr1 get volumesnapshotclass 2>/dev/null
         echo ""
-        echo "=== ACTIVE VOLUME REPLICATIONS ==="
-        kubectl --context=dr1 get volumereplication -A 2>/dev/null | head -5
+        echo "=== ACTIVE VOLUME REPLICATIONS (SOURCEKIND: PersistentVolumeClaim=single, VolumeGroupReplication=group) ==="
+        kubectl --context=dr1 get volumereplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SOURCEKIND:.spec.dataSource.kind,SOURCENAME:.spec.dataSource.name,STATE:.status.state 2>/dev/null | head -8
         echo "  Detailed Status:"
         kubectl --context=dr1 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.state}{"|"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"|"}{.status.message}{"\n"}{end}' 2>/dev/null | sed 's/|/  /g' || echo "  No active replications"
         wait_for_refresh 3
@@ -367,10 +481,14 @@ storage_usage_monitoring() {
         echo "=== VOLUME SNAPSHOTS ==="
         kubectl --context=dr1 get volumesnapshot -A 2>/dev/null | head -5 || echo "No volume snapshots found"
         echo ""
-        echo "=== ACTIVE VOLUME REPLICATIONS ==="
-        kubectl --context=dr1 get volumereplication -A 2>/dev/null | head -5
+        echo "=== ACTIVE VOLUME REPLICATIONS (SOURCEKIND: PersistentVolumeClaim=single, VolumeGroupReplication=group) ==="
+        kubectl --context=dr1 get volumereplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,SOURCEKIND:.spec.dataSource.kind,SOURCENAME:.spec.dataSource.name,STATE:.status.state 2>/dev/null | head -8
         echo "  Detailed Status:"
         kubectl --context=dr1 get volumereplication -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.status.state}{"|"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"|"}{.status.message}{"\n"}{end}' 2>/dev/null | sed 's/|/  /g' || echo "  No active replications"
+        echo ""
+        echo "=== VOLUME GROUP REPLICATIONS ==="
+        kubectl --context=dr1 get volumegroupreplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,VGRCLASS:.spec.volumeGroupReplicationClassName,STATE:.status.state 2>/dev/null | head -15 || echo "  No VolumeGroupReplications found"
+        kubectl --context=dr2 get volumegroupreplication -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,VGRCLASS:.spec.volumeGroupReplicationClassName,STATE:.status.state 2>/dev/null | head -15 || echo "  No VolumeGroupReplications found on dr2"
         echo ""
         echo "=== NETWORK FENCE CLASSES ==="
         kubectl --context=dr1 get networkfenceclass -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,PROVISIONER:.spec.provisioner 2>/dev/null | head -5 || echo "No NetworkFenceClass resources found on dr1"
@@ -474,9 +592,10 @@ show_help() {
     echo "  • If mirroring issues: check rook-ceph-rbd-mirror pods"
     echo ""
     echo -e "${PURPLE}🧪 Testing Commands:${NC}"
-    echo "  • make test-csi-replication     # Test volume replication"
-    echo "  • make test-csi-failover       # Test demote/promote flow"
-    echo "  • make status-csi-replication  # Check environment status"
+    echo "  • make test-csi-replication           # Test single-volume replication"
+    echo "  • make test-csi-failover             # Test demote/promote flow"
+    echo "  • make test-csi-volumegroupreplication # Test VGR (VolumeGroupReplication)"
+    echo "  • make status-csi-replication        # Check environment status"
 }
 
 # Main menu
@@ -488,7 +607,7 @@ main() {
         # Direct comprehensive monitoring without menu
         while true; do
             comprehensive_csi_monitoring
-            wait_for_refresh 5
+            wait_for_refresh 20
         done
     fi
     
@@ -509,7 +628,7 @@ main() {
                 sleep 2
                 while true; do
                     comprehensive_csi_monitoring
-                    wait_for_refresh 10
+                    wait_for_refresh 20
                 done
                 ;;
             7) show_commands ;;

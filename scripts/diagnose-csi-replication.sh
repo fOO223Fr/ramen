@@ -33,21 +33,23 @@ diagnose_cluster() {
     fi
     echo ""
     
-    # 2. Check CSI services exist
+    # 2. Check CSI services exist (Rook may use different service names; provisioner pods are the key)
     echo -e "${PURPLE}2. CSI Services (rook-ceph namespace)${NC}"
-    local svc_rbd=$(kubectl --context=$context -n rook-ceph get svc csi-rbdplugin-provisioner 2>/dev/null && echo "found" || echo "missing")
-    local svc_cephfs=$(kubectl --context=$context -n rook-ceph get svc csi-cephfsplugin-provisioner 2>/dev/null && echo "found" || echo "missing")
+    local svc_rbd="missing"
+    kubectl --context=$context -n rook-ceph get svc 2>/dev/null | grep -q csi-rbdplugin-provisioner && svc_rbd="found"
+    local svc_cephfs="missing"
+    kubectl --context=$context -n rook-ceph get svc 2>/dev/null | grep -q csi-cephfsplugin-provisioner && svc_cephfs="found"
     
     if [ "$svc_rbd" = "found" ]; then
         echo -e "${GREEN}✓ csi-rbdplugin-provisioner service${NC}"
     else
-        echo -e "${RED}✗ csi-rbdplugin-provisioner service MISSING${NC}"
+        echo -e "${YELLOW}⚠ csi-rbdplugin-provisioner service not found (Rook may use different naming; run: make restart-csi-service to create)${NC}"
     fi
     
     if [ "$svc_cephfs" = "found" ]; then
         echo -e "${GREEN}✓ csi-cephfsplugin-provisioner service${NC}"
     else
-        echo -e "${RED}✗ csi-cephfsplugin-provisioner service MISSING${NC}"
+        echo -e "${YELLOW}⚠ csi-cephfsplugin-provisioner service not found (optional for RBD replication)${NC}"
     fi
     echo ""
     
@@ -148,17 +150,36 @@ diagnose_cluster() {
     fi
     echo ""
     
-    # 8. Check RBD images
+    # 8. Check RBD images (use replicapool for CSI replication tests)
     echo -e "${PURPLE}8. RBD Images${NC}"
-    local rbd_pool="rbd"
-    local images=$(kubectl --context=$context -n rook-ceph exec deploy/rook-ceph-tools -- rbd ls $rbd_pool --format=json 2>/dev/null | jq -r '.[]' 2>/dev/null || echo "")
+    local rbd_pool="replicapool"
+    local images=""
+    images=$(kubectl --context=$context -n rook-ceph exec deploy/rook-ceph-tools -- rbd ls $rbd_pool --format=json 2>/dev/null | jq -r '.[]' 2>/dev/null || echo "")
     if [ -n "$images" ]; then
         echo -e "${GREEN}✓ RBD images in $rbd_pool pool:${NC}"
         echo "$images" | head -5 | sed 's/^/  - /'
     else
-        echo -e "${YELLOW}No RBD images (or error accessing Ceph)${NC}"
+        echo -e "${YELLOW}No RBD images in $rbd_pool (or error accessing Ceph)${NC}"
     fi
     echo ""
+
+    # 9. CSIAddonsNode and "no leader" detection (critical for VGR/VR)
+    echo -e "${PURPLE}9. CSIAddonsNode (controller→sidecar connection)${NC}"
+    local node_count
+    node_count=$(kubectl --context=$context get csiaddonsnode -A -o name 2>/dev/null | wc -l)
+    if [ "${node_count:-0}" -gt 0 ]; then
+        echo -e "${GREEN}✓ $node_count CSIAddonsNode resource(s)${NC}"
+        kubectl --context=$context get csiaddonsnode -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,DRIVER:.spec.driverName 2>/dev/null | head -8
+    else
+        echo -e "${RED}✗ No CSIAddonsNode - controller cannot reach sidecars. Run: make restart-csi-service${NC}"
+    fi
+    echo ""
+    local no_leader
+    no_leader=$(kubectl --context=$context -n csi-addons-system logs deployment/csi-addons-controller-manager --tail=100 2>/dev/null | grep -c "no leader for the ControllerService" || echo "0")
+    if [ "${no_leader:-0}" -gt 0 ]; then
+        echo -e "${RED}⚠ 'no leader' errors in controller logs ($no_leader recent) - VGR/VR will fail. Run: make restart-csi-service${NC}"
+        echo ""
+    fi
 }
 
 main() {
@@ -177,8 +198,13 @@ main() {
     echo "If you see ✗ (errors):"
     echo "  1. Missing services? Run: make restart-csi-service"
     echo "  2. No leader elected? Run: make restart-csi-service"
-    echo "  3. Controller errors? Check: kubectl --context=dr1 -n csi-addons-system logs -f deployment/csi-addons-controller-manager"
-    echo "  4. VR with EMPTY state? Check sidecar logs: kubectl --context=dr1 -n rook-ceph logs -f deploy/csi-rbdplugin-provisioner -c csi-addons"
+    echo "  3. No CSIAddonsNode or 'no leader' errors? Run: make restart-csi-service"
+    echo "  4. Controller errors? Check: kubectl --context=dr1 -n csi-addons-system logs -f deployment/csi-addons-controller-manager"
+    echo "  5. VR/VGR with EMPTY state? Run: make restart-csi-service  # forces controller to reconnect to sidecars"
+    echo ""
+    echo "For VGR test (make test-csi-volumegroupreplication):"
+    echo "  • If VGR state stays <none> with 'no leader' in controller logs → make restart-csi-service"
+    echo "  • Recommended flow: make reset-csi-replication-state && make restart-csi-service && make test-csi-volumegroupreplication"
     echo ""
 }
 

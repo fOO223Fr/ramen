@@ -3,12 +3,10 @@
 # SPDX-FileCopyrightText: The RamenDR authors
 # SPDX-License-Identifier: Apache-2.0
 #
+# Use official kubernetes-csi-addons for VolumeReplication (test-dr-flow, test-csi-replication).
+# The cg-support fork broke single VR flow. VGR CRDs come from hack/test via setup-csi-storage-resources.
 ---
 resources:
-  - https://raw.githubusercontent.com/Nikhil-Ladha/kubernetes-csi-addons/refs/heads/cg-support/deploy/controller/crds.yaml
-  - https://raw.githubusercontent.com/Nikhil-Ladha/kubernetes-csi-addons/refs/heads/cg-support/deploy/controller/rbac.yaml
-  - https://raw.githubusercontent.com/Nikhil-Ladha/kubernetes-csi-addons/refs/heads/cg-support/deploy/controller/setup-controller.yaml
-images:
-  - name: quay.io/csiaddons/k8s-controller
-    newName: quay.io/nladha/csiaddons-controller
-    newTag: cg
+  - https://raw.githubusercontent.com/csi-addons/kubernetes-csi-addons/main/deploy/controller/crds.yaml
+  - https://raw.githubusercontent.com/csi-addons/kubernetes-csi-addons/main/deploy/controller/rbac.yaml
+  - https://raw.githubusercontent.com/csi-addons/kubernetes-csi-addons/main/deploy/controller/setup-controller.yaml

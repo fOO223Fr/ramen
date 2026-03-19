@@ -25,6 +25,10 @@ DR2_PVC_NAME="dr-flow-pvc"
 DR2_VR_NAME="dr-flow-replication"
 TEST_DATA="DR-FLOW-TEST-DATA-$(date +%s)"
 
+# Project root for scripts
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # Cleanup function
 cleanup() {
     echo ""
@@ -40,17 +44,6 @@ cleanup() {
     kubectl --context=dr2 -n default delete pvc $DR2_PVC_NAME --ignore-not-found=true 2>/dev/null
     kubectl --context=dr2 delete pv dr-flow-pv-dr2 --ignore-not-found=true 2>/dev/null
 
-    # Cleanup RBD snapshots on DR2
-    echo "Cleaning up RBD snapshots on DR2..."
-    RBD_IMAGES=$(kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd ls replicapool 2>/dev/null | grep "csi-vol-" || true)
-    for IMAGE in $RBD_IMAGES; do
-        echo "  Cleaning snapshots for image: $IMAGE"
-        SNAPSHOTS=$(kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd snap ls replicapool/$IMAGE --format=json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true)
-        for SNAP in $SNAPSHOTS; do
-            kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd snap rm replicapool/$IMAGE@$SNAP 2>/dev/null || true
-        done
-    done
-
     # Cleanup DR1
     echo "Cleaning up DR1..."
     kubectl --context=dr1 -n default delete pod dr-flow-test-pod --ignore-not-found=true --wait=false 2>/dev/null
@@ -58,6 +51,11 @@ cleanup() {
     kubectl --context=dr1 -n default delete volumereplication $DR1_VR_NAME --ignore-not-found=true 2>/dev/null
     kubectl --context=dr1 -n default patch pvc $DR1_PVC_NAME --type='merge' -p='{"metadata":{"finalizers":[]}}' 2>/dev/null
     kubectl --context=dr1 -n default delete pvc $DR1_PVC_NAME --ignore-not-found=true 2>/dev/null
+
+    # Delete all mirrored RBD images (removes unknown/error state, restores mirroring health)
+    echo "Cleaning up mirrored RBD images..."
+    cd "$PROJECT_ROOT" && ./scripts/cleanup-replicated-images.sh 2>/dev/null || true
+    cd - >/dev/null
     set -e
 
     echo "✓ Cleanup completed"
@@ -362,23 +360,39 @@ if ! wait_for_vr_state dr2 $DR2_VR_NAME Primary 90; then
     echo "=== All Replication Pods on DR2 ==="
     kubectl --context=dr2 get pods -A | grep -i replicate
     echo ""
-    echo "=== CSI Addons Sidecar Logs (if available) ==="
-    SIDECAR_POD=$(kubectl --context=dr2 get pods -A -l app=csi-addons-replication-sidecar -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-    if [ ! -z "$SIDECAR_POD" ]; then
-        kubectl --context=dr2 logs -n $(kubectl --context=dr2 get pods -A -l app=csi-addons-replication-sidecar -o jsonpath='{.items[0].metadata.namespace}') $SIDECAR_POD --tail=100
-    else
-        echo "No replication sidecar pod found"
-    fi
+    echo "=== CSI RBD Provisioner Pod Logs (DR1 + DR2) ==="
+    for ctx in dr1 dr2; do
+        RBD_PROV_POD=$(kubectl --context=$ctx get pods -n rook-ceph -l app=csi-rbdplugin-provisioner -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [ -n "$RBD_PROV_POD" ]; then
+            echo "--- $ctx: csi-addons container ---"
+            kubectl --context=$ctx logs -n rook-ceph "$RBD_PROV_POD" -c csi-addons --tail=50 2>/dev/null || echo "  Could not get logs"
+            echo ""
+            echo "--- $ctx: csi-rbdplugin (mirror/replication) ---"
+            kubectl --context=$ctx logs -n rook-ceph "$RBD_PROV_POD" -c csi-rbdplugin --tail=80 2>/dev/null | grep -iE "mirror|replicat|enable|disable|error|fail|snapshot" || \
+            kubectl --context=$ctx logs -n rook-ceph "$RBD_PROV_POD" -c csi-rbdplugin --tail=30 2>/dev/null || echo "  Could not get logs"
+            echo ""
+        fi
+    done
     echo ""
     echo "=== VolumeReplicationClass Configuration ==="
     kubectl --context=dr2 get volumereplicationclass rbd-volumereplicationclass -o yaml
     echo ""
-    echo "=== RBD Image Status (for comparison with CRD approach) ==="
-    kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror image status replicapool/$RBD_IMAGE 2>/dev/null || echo "Could not check RBD mirror status"
+    echo "=== RBD Image Status (DR1 + DR2) ==="
+    kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror image status replicapool/$RBD_IMAGE 2>/dev/null || echo "Could not check RBD mirror status on DR1"
+    kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror image status replicapool/$RBD_IMAGE 2>/dev/null || echo "Could not check RBD mirror status on DR2"
+    echo ""
+    echo "=== RBD Mirror Pool Status (DR1 + DR2) ==="
+    kubectl --context=dr1 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool --verbose 2>/dev/null | head -40 || true
+    kubectl --context=dr2 -n rook-ceph exec deploy/rook-ceph-tools -- rbd mirror pool status replicapool --verbose 2>/dev/null | head -40 || true
     set -e
     echo ""
     echo "The test will continue for diagnostics, but CRD-based failover may be incomplete."
     echo "This could indicate the CSI addons controller is not properly processing VolumeReplication resources."
+    echo ""
+    echo "If you see 'no leader for the ControllerService' or 'no connection' in CSI Addons logs:"
+    echo "  make fix-csi-addons-tls"
+    echo "  make restart-csi-service"
+    echo "  make reset-csi-replication-state"
     echo ""
 else
     echo "✓ VolumeReplication reached Primary state on DR2"
