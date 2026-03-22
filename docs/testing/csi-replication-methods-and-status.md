@@ -100,8 +100,10 @@ This document describes each CSI replication method, its operational flow, how t
 
 | Component | Status |
 |-----------|--------|
-| **CSI Addons controller** | ❌ VolumeGroup controller **not** in official release; PR #402 closed; only in forks (e.g. `add_volume_group_controller` branch) |
+| **CSI Addons controller** | ❌ VolumeGroup controller **not** in official release; PR [#402](https://github.com/csi-addons/kubernetes-csi-addons/pull/402) closed; only in forks (e.g. `add_volume_group_controller` branch) |
 | **VolumeGroup CRDs** | ⚠️ CRD YAML in hack/test; controller required for reconciliation |
+
+> **PR #402 vs PR #588:** [PR #402](https://github.com/csi-addons/kubernetes-csi-addons/pull/402) ("adding vg api") proposed the VolumeGroup CRD and controller. It was **closed** (Jun 2024) as "too complex" by maintainers, who chose [PR #588](https://github.com/csi-addons/kubernetes-csi-addons/pull/588) instead—**VolumeGroupReplication** (Method 3)—a simpler API that lets CSI drivers handle grouping via `source.selector`. The VolumeGroup functionality from PR #402 was never merged; the group-replication path in kubernetes-csi-addons is **VolumeGroupReplication**, not VolumeGroup + VolumeReplication.
 | **Ceph CSI (RBD)** | ✅ Implements CreateVolumeGroup, VolumeGroupServer (PR #4707, #4719, #5221) |
 | **IBM Block CSI** | ⚠️ Uses IBM csi-volume-group-operator (proprietary VolumeGroup CRD); policy-based VR with dataSource.kind=VolumeGroup |
 | **Dell** | ❌ No VolumeGroup support |
@@ -110,6 +112,8 @@ This document describes each CSI replication method, its operational flow, how t
 ---
 
 ## Method 3: VolumeGroupReplication (VGR)
+
+This is the **chosen path** for group replication in kubernetes-csi-addons (merged via [PR #588](https://github.com/csi-addons/kubernetes-csi-addons/pull/588), Jun 2024), replacing the more complex VolumeGroup approach from PR #402.
 
 ### Flow
 
@@ -121,9 +125,9 @@ This document describes each CSI replication method, its operational flow, how t
    - `source.selector` matching the PVC labels
 3. **VGR controller** (from kubernetes-csi-addons) reconciles the VGR:
    - Finds PVCs matching the selector.
-   - Creates **VolumeGroupReplicationContent** (and per-volume VolumeReplicationContent).
-   - Calls replication gRPC for each volume via the CSI driver.
-4. Driver replicates each volume (e.g. RBD mirroring per image).
+   - Creates **VolumeGroupReplicationContent**; the **VGRC controller** calls CSI **VolumeGroup** gRPC (`CreateVolumeGroup`, membership updates) so the backend has a group handle.
+   - After the group handle exists, creates a **VolumeReplication** whose replication source is the **volume group** (not a single PVC); the **VolumeReplication** controller calls **EnableVolumeReplication** (and related RPCs) on that group source.
+4. Driver is expected to enable **group-consistent** replication on the backend (e.g. RBD group mirroring). Behavior depends on ceph-csi correctly handling `ReplicationSource_VolumeGroup` in the replication service (see **Known issues** below).
 5. **Failover:** Demote VGR on DR1; create PVs/PVCs on DR2; create VGR on DR2 with same selector; promote.
 
 ### Test Flow (Expected)
@@ -145,16 +149,39 @@ This document describes each CSI replication method, its operational flow, how t
 
 **Test script:** [`test/test-csi-volumegroupreplication.sh`](../../test/test-csi-volumegroupreplication.sh) — validates VGR flow (source.selector, VGRC, failover).
 
+### CSI-addons Identity: there is no `VOLUME_GROUP_REPLICATION` capability
+
+The [CSI-addons Identity `GetCapabilities`](https://github.com/csi-addons/spec/blob/main/identity/identity.proto) API does **not** define a separate capability enum for “volume group replication.” Group replication is expressed in the **replication** gRPC (e.g. a volume-group id in `ReplicationSource`), not as a distinct Identity capability string.
+
+**What kubernetes-csi-addons actually requires** (see upstream controllers):
+
+| Controller / step | Identity capability checked |
+|-------------------|------------------------------|
+| **VolumeGroupReplicationContent** | `VolumeGroup` → **`VOLUME_GROUP`** (and related `volume_group.*` lines the driver registers) |
+| **VolumeReplication** (child CR used by VGR) | `VolumeReplication` → **`VOLUME_REPLICATION`** |
+
+On a **Rook/Ceph** cluster, both are expected on the **RBD provisioner** `CSIAddonsNode` (controller pod). Typical `CSIAddonsNode.status.capabilities` strings look like `volume_group.VOLUME_GROUP`, `volume_group.MODIFY_VOLUME_GROUP`, `volume_replication.VOLUME_REPLICATION`, etc.—**not** `volume_group_replication.*`.
+
+**Heuristic scripts** that grep only for a substring such as `volume_group_replication` can report “missing VGR support” even when the driver advertises the **correct pair** above. Prefer checking **`volume_replication` + `volume_group.VOLUME_GROUP`** on the provisioner node, or use the expanded checks in [`scripts/check_cluster_csi_capabilities.sh`](../../scripts/check_cluster_csi_capabilities.sh) (`--mode volumegroupreplication`).
+
+### Known issues (Ceph CSI / VGR)
+
+| Issue | Summary |
+|-------|---------|
+| [ceph-csi#6190](https://github.com/ceph/ceph-csi/issues/6190) | **`EnableVolumeReplication` with `ReplicationSource_VolumeGroup`:** ceph-csi treats the **group handle as a volume id** (`GetVolumeByID`-style path), causing **NotFound / “volume not found”** and VGR stuck in **Unknown**. The same mishandling may affect other group replication RPCs until fixed in the driver image you run. |
+
+Until the driver handles group replication sources correctly, **VGR can fail at the replication step** even when CRDs, kubernetes-csi-addons, and `CSIAddonsNode` connectivity look healthy.
+
 ### Adoption / Support Status
 
 | Component | Status |
 |-----------|--------|
 | **CSI Addons controller** | ⚠️ VGR controller: scaffolding in v0.9.0; **broken in v0.12.0** (no reaction to VGR events); **working from v0.13.0** |
 | **VGR CRDs** | ✅ In official kubernetes-csi-addons releases |
-| **Ceph CSI (RBD)** | ✅ VolumeGroupReplicationContent controller; RBD mirroring refactored for volume groups |
+| **Ceph CSI (RBD)** | ⚠️ Implements VolumeGroup + VolumeReplication CSI-addons services and VGRC-oriented flows; **group `EnableVolumeReplication` broken in reported releases** ([#6190](https://github.com/ceph/ceph-csi/issues/6190)). Treat **image tag + release notes** as the source of truth, not a single “minimum version.” |
 | **IBM Block CSI** | ❌ Uses VolumeGroup + VR (Method 2), not VGR |
 | **Dell** | ❌ Uses DellCSIReplicationGroup; different architecture |
-| **RamenDR** | ⚠️ Depends on csi-addons version; sidecar v0.11.0 may limit VGR behavior |
+| **RamenDR** | ⚠️ Depends on csi-addons version; sidecar **v0.11.x** may limit VGR behavior vs **v0.13+** |
 
 ---
 
@@ -164,7 +191,7 @@ This document describes each CSI replication method, its operational flow, how t
 |--------|------------|----------|-----|------|-------------|
 | **1. Single VR** | ✅ | ✅ | ✅ | ✅ (Dell stack) | ✅ `test-csi-replication`, `test-dr-flow` |
 | **2. VolumeGroupEnableReplication** | ❌ (no controller) | ✅ | ⚠️ (IBM operator) | ❌ | ❌ Blocked |
-| **3. VolumeGroupReplication** | ⚠️ (v0.13+) | ✅ | ❌ | ❌ | ✅ `test-csi-volumegroupreplication` |
+| **3. VolumeGroupReplication** | ⚠️ (v0.13+) | ⚠️ (group replication RPCs: [#6190](https://github.com/ceph/ceph-csi/issues/6190); Identity uses `volume_group.*` + `volume_replication`, not `VOLUME_GROUP_REPLICATION`) | ❌ | ❌ | ✅ `test-csi-volumegroupreplication` (driver must implement group source correctly) |
 
 ---
 
@@ -196,5 +223,8 @@ For CSI replication testing, the focus is on the underlying CSI methods (1–3 a
 
 - [CSI Addons Specification](https://github.com/csi-addons/spec)
 - [kubernetes-csi-addons](https://github.com/csi-addons/kubernetes-csi-addons)
+- [PR #402](https://github.com/csi-addons/kubernetes-csi-addons/pull/402) — VolumeGroup API (closed; functionality not merged)
+- [PR #588](https://github.com/csi-addons/kubernetes-csi-addons/pull/588) — VolumeGroupReplication scaffolding (merged; chosen path)
+- [ceph-csi#6190](https://github.com/ceph/ceph-csi/issues/6190) — VGR: `EnableVolumeReplication` mishandles `ReplicationSource_VolumeGroup` (group handle vs volume id)
 - [CSI Replication Testing Guide](./csi-replication-testing.md)
 - [RamenDR VRG Type Sequence](../design/VRG-TypeSequence.md)
