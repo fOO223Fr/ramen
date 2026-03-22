@@ -115,7 +115,7 @@ if ! kubectl --context=dr1 get volumereplicationclass "$VRC_NAME" >/dev/null 2>&
 fi
 # Check CSIAddonsNode exists for RBD driver (controller needs this to reach sidecar; "no leader" when missing)
 # Note: grep -c exits 1 when 0 matches; avoid "|| echo 0" which appends and causes "0\n0" syntax error
-rbd_node_count=$(kubectl --context=dr1 get csiaddonsnode -A -o jsonpath='{range .items[*]}{.spec.driverName}{"\n"}{end}' 2>/dev/null | grep -c "rook-ceph.rbd.csi.ceph.com" 2>/dev/null) || true
+rbd_node_count=$(kubectl --context=dr1 get csiaddonsnode -A -o jsonpath='{range .items[*]}{.spec.driver.name}{"\n"}{end}' 2>/dev/null | grep -c "rook-ceph.rbd.csi.ceph.com" 2>/dev/null) || true
 rbd_node_count=${rbd_node_count:-0}
 if [[ "$rbd_node_count" -eq 0 ]]; then
   fail "No CSIAddonsNode for rook-ceph.rbd.csi.ceph.com on dr1. Controller cannot reach sidecar (causes 'no leader'). Run: make restart-csi-service" "prerequisite"

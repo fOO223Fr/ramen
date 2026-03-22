@@ -3,11 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Check cluster CSI capabilities: NetworkFence, CSI replication addon, VolumeGroupReplication.
-# Usage: ./check_cluster_csi_capabilities.sh [--mode networkfence|replication|volumegroupreplication|all]
+# Usage: ./check_cluster_csi_capabilities.sh [--mode networkfence|replication|volumegroupreplication|all] [--detailed]
 #   --mode: which capabilities to check (default: networkfence)
+#   --detailed: for volumegroupreplication (or all), print CSIAddonsNode rows, sidecar images, controller deployment
 #   CHECK_MODE env var overrides --mode if set
 
 set -euo pipefail
+
+DETAILED=false
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing required command: $1" >&2; exit 1; }; }
 need_cmd kubectl
@@ -19,7 +22,7 @@ need_cmd sed
 # Optional: set to reduce pod output (regex-like string used by jq test(...;"i"))
 POD_HINT="${POD_HINT:-}"
 
-# Parse --mode argument
+# Parse arguments
 CHECK_MODE="${CHECK_MODE:-networkfence}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -27,9 +30,13 @@ while [[ $# -gt 0 ]]; do
       CHECK_MODE="$2"
       shift 2
       ;;
+    --detailed)
+      DETAILED=true
+      shift
+      ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--mode networkfence|replication|volumegroupreplication|all]" >&2
+      echo "Usage: $0 [--mode networkfence|replication|volumegroupreplication|all] [--detailed]" >&2
       exit 2
       ;;
   esac
@@ -44,6 +51,196 @@ case "$CHECK_MODE" in
 esac
 
 EXIT_CODE=0
+
+# Helper: Detect capabilities in CSIAddonsNode objects
+# Usage: detect_capability_in_csiaddonsnode <capability_pattern> <csiaddonsnode_crd>
+# Returns: JSON array with {capability, driver} objects, empty array if none found
+detect_capability_in_csiaddonsnode() {
+  local cap_pattern="$1"
+  local csiaddonsnode_crd="$2"
+
+  if [[ -z "${csiaddonsnode_crd}" || "${csiaddonsnode_crd}" == "null" ]]; then
+    echo "WARNING: csiaddonsnode_crd parameter is empty or null. Cannot detect capabilities." >&2
+    echo "[]"
+    return 0
+  fi
+
+  local nodes_json
+  nodes_json="$(kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null)"
+
+  # Emit a single JSON array (not NDJSON) so callers can pipe to jq '.[]'
+  echo "$nodes_json" | jq -c --arg pattern "$cap_pattern" '
+    [
+      .items[]
+      | . as $n
+      | ($n.status.capabilities // [])
+      | map(
+          if type == "string" then
+            {capability: ., driver: ($n.spec.driver.name // "-")}
+          else
+            {capability: (.name // . | tostring), driver: ($n.spec.driver.name // "-")}
+          end
+        )
+      | map(select(.capability | ascii_downcase | test($pattern)))
+      | .[]
+    ]
+  ' 2>/dev/null
+}
+
+# RBD CSI pods (node DaemonSet and provisioner Deployment) that include a csi-addons container
+list_rbd_pods_with_csi_addons_sidecar() {
+  kubectl get pods -A -o json 2>/dev/null | jq -r '
+    .items[]
+    | select(.metadata.name | test("csi-rbdplugin"))
+    | . as $p
+    | ($p.spec.containers // []) | map(.name) as $names
+    | select($names | length > 0)
+    | select($names | map(ascii_downcase) | any(test("csi-addons")))
+    | "\($p.metadata.namespace)\t\($p.metadata.name)\t\($names | join(","))"
+  ' 2>/dev/null | sort -u
+}
+
+print_vgr_sidecar_summary() {
+  echo
+  echo "## RBD CSI pods: csi-addons sidecar (node + provisioner)"
+  local lines
+  lines="$(list_rbd_pods_with_csi_addons_sidecar)"
+  if [[ -z "${lines}" ]]; then
+    echo "RESULT: No pod matching name /csi-rbdplugin/i with a csi-addons container."
+    echo "        VolumeGroupReplication needs the csi-addons sidecar next to rook-ceph.rbd.csi.ceph.com."
+    EXIT_CODE=1
+  else
+    echo "OK: Pods with csi-rbdplugin name and csi-addons container:"
+    echo "${lines}" | while IFS=$'\t' read -r ns name containers; do
+      echo "  - ${ns}/${name} :: ${containers}"
+    done
+  fi
+}
+
+print_csiaddonsnode_vgr_table() {
+  local csiaddonsnode_crd="$1"
+  echo
+  echo "## CSIAddonsNode objects (controller discovers sidecars here)"
+  if [[ -z "${csiaddonsnode_crd}" || "${csiaddonsnode_crd}" == "null" ]]; then
+    echo "SKIP: CSIAddonsNode CRD not installed."
+    return
+  fi
+  local count
+  count="$(kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null | jq '.items | length')"
+  if [[ "${count}" -eq 0 ]]; then
+    echo "RESULT: 0 CSIAddonsNode — kubernetes-csi-addons cannot route VolumeReplication/VGR RPCs."
+    echo "        Fix: ensure sidecar registers nodes (RBAC, TLS), or apply valid CSIAddonsNode + restart CSI pods."
+    EXIT_CODE=1
+    return
+  fi
+  echo "OK: ${count} CSIAddonsNode object(s). Summary:"
+  kubectl get "${csiaddonsnode_crd}" -A -o custom-columns=\
+'NAMESPACE:.metadata.namespace,NAME:.metadata.name,DRIVER:.spec.driver.name,STATE:.status.state,ENDPOINT:.spec.driver.endpoint' \
+    2>/dev/null | sed 's/^/  /'
+  echo
+  echo "  Per-node capabilities (replication / volume_group_replication):"
+  kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null | jq -r '
+    .items[]
+    | . as $n
+    | ($n.status.capabilities // []) as $caps
+    | ($caps | map(ascii_downcase)) as $lc
+    | [
+        ($n.metadata.namespace // "-"),
+        ($n.metadata.name // "-"),
+        ($n.spec.driver.name // "-"),
+        (($lc | any(test("replication"))) | tostring),
+        (($lc | any(test("volume_group_replication"))) | tostring)
+      ]
+    | @tsv
+  ' | awk -F'\t' 'BEGIN{printf "  %-20s %-40s %-35s %-12s %s\n","NAMESPACE","NAME","DRIVER","REPLICATION","VGR_CAP"; print "  " "------------------------------------------------------------------------------------------"}
+{printf "  %-20s %-40s %-35s %-12s %s\n",$1,$2,$3,$4,$5}'
+}
+
+print_vgr_detailed_extras() {
+  local csiaddonsnode_crd="$1"
+  if [[ -z "${csiaddonsnode_crd}" || "${csiaddonsnode_crd}" == "null" ]]; then
+    echo
+    echo "## Detailed: skipped (CSIAddonsNode CRD not installed)"
+    return
+  fi
+  echo
+  echo "## Detailed: full capability strings per CSIAddonsNode"
+  kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null | jq -r '
+    .items[]
+    | "--- \(.metadata.namespace)/\(.metadata.name) driver=\(.spec.driver.name // "-") ---",
+      (.status.capabilities // [])[]?
+  ' | sed 's/^/  /'
+
+  echo
+  echo "## Detailed: csi-addons container image(s) on RBD CSI pods"
+  while IFS=$'\t' read -r ns name _containers; do
+    [[ -z "${ns}" ]] && continue
+    img="$(kubectl get pod -n "$ns" "$name" -o jsonpath='{range .spec.containers[*]}{.name}{"="}{.image}{"\n"}{end}' 2>/dev/null | grep -i 'csi-addons' || true)"
+    [[ -n "${img}" ]] && echo "  ${ns}/${name}: ${img}"
+  done < <(list_rbd_pods_with_csi_addons_sidecar)
+
+  echo
+  echo "## Detailed: kubernetes-csi-addons controller"
+  local found=false
+  for ns in csi-addons-system openshift-storage; do
+    if kubectl get deploy -n "$ns" csi-addons-controller-manager >/dev/null 2>&1; then
+      found=true
+      echo "  OK: deployment/csi-addons-controller-manager in namespace ${ns}"
+      kubectl get deploy -n "$ns" csi-addons-controller-manager -o jsonpath='    images: {.spec.template.spec.containers[*].image}{"\n"}' 2>/dev/null
+    fi
+  done
+  if [[ "${found}" == "false" ]]; then
+    echo "  RESULT: csi-addons-controller-manager not found in csi-addons-system or openshift-storage."
+    echo "           VGR CRs are reconciled by kubernetes-csi-addons; install the controller if missing."
+    EXIT_CODE=1
+  fi
+}
+
+print_vgr_configuration_verdict() {
+  local csiaddonsnode_crd="$1"
+  echo
+  echo "## VolumeGroupReplication configuration verdict"
+  if [[ -z "${csiaddonsnode_crd}" || "${csiaddonsnode_crd}" == "null" ]]; then
+    echo "  FAIL: CSIAddonsNode CRD missing."
+    return
+  fi
+  local ncount rbd_nodes repl_nodes vgr_nodes pod_lines
+  ncount="$(kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null | jq '.items | length')"
+  rbd_nodes="$(kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null | jq '[.items[] | select(.spec.driver.name == "rook-ceph.rbd.csi.ceph.com")] | length')"
+  repl_nodes="$(kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null | jq '
+    [.items[] | select((.status.capabilities // []) | map(ascii_downcase) | any(test("replication")))] | length
+  ')"
+  vgr_nodes="$(kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null | jq '
+    [.items[] | select((.status.capabilities // []) | map(ascii_downcase) | any(test("volume_group_replication")))] | length
+  ')"
+  pod_lines="$(list_rbd_pods_with_csi_addons_sidecar | wc -l)"
+
+  if [[ "${pod_lines}" -gt 0 ]]; then
+    echo "  OK: RBD CSI pod(s) include csi-addons sidecar (${pod_lines})."
+  else
+    echo "  FAIL: No RBD CSI pod with csi-addons sidecar."
+  fi
+  if [[ "${ncount}" -gt 0 ]]; then
+    echo "  OK: ${ncount} CSIAddonsNode object(s) registered."
+  else
+    echo "  FAIL: No CSIAddonsNode objects (sidecar not publishing or wrong API/TLS/RBAC)."
+  fi
+  if [[ "${rbd_nodes}" -gt 0 ]]; then
+    echo "  OK: ${rbd_nodes} CSIAddonsNode for rook-ceph.rbd.csi.ceph.com."
+  else
+    echo "  WARN: No CSIAddonsNode for rook-ceph.rbd.csi.ceph.com (driver name mismatch or not registered)."
+  fi
+  if [[ "${repl_nodes}" -gt 0 ]]; then
+    echo "  OK: ${repl_nodes} node(s) advertise replication capability."
+  else
+    echo "  FAIL: No CSIAddonsNode advertises replication (VGR depends on replication RPCs)."
+  fi
+  if [[ "${vgr_nodes}" -gt 0 ]]; then
+    echo "  OK: ${vgr_nodes} node(s) advertise volume_group_replication capability."
+  else
+    echo "  FAIL: No CSIAddonsNode advertises volume_group_replication (driver too old or feature off)."
+  fi
+}
 
 check_kubectl_connectivity() {
   echo
@@ -208,15 +405,11 @@ check_csi_replication() {
     echo "SKIP: CSIAddonsNode CRD not installed."
     EXIT_CODE=1
   else
-    nodes_json="$(kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null)"
-    has_replication="$(echo "$nodes_json" | jq -r '
-      .items[]
-      | select((.status.capabilities // []) | map(if type == "string" then ascii_downcase else ((.name // . | tostring) | ascii_downcase) end) | any(test("replication")))
-      | .spec.driver.name // empty
-    ' 2>/dev/null | head -n 1)"
-
-    if [[ -n "${has_replication}" ]]; then
-      echo "OK: Driver(s) advertise replication capability (e.g. $has_replication)"
+    has_replication="$(detect_capability_in_csiaddonsnode "replication" "$csiaddonsnode_crd")"
+    
+    if [[ "${has_replication}" != "[]" && -n "${has_replication}" ]]; then
+      drivers_repl="$(echo "$has_replication" | jq -r '.[] | .driver' | sort -u | tr '\n' ', ' | sed 's/,$//')"
+      echo "OK: Driver(s) advertise replication capability: $drivers_repl"
     else
       echo "RESULT: No CSIAddonsNode advertises replication capability."
       echo "        CSI driver may not support replication; or install CRDs from kubernetes-csi-addons."
@@ -250,15 +443,11 @@ check_volumegroupreplication() {
     echo "SKIP: CSIAddonsNode CRD not installed."
     EXIT_CODE=1
   else
-    nodes_json="$(kubectl get "${csiaddonsnode_crd}" -A -o json 2>/dev/null)"
-    has_replication="$(echo "$nodes_json" | jq -r '
-      .items[]
-      | select((.status.capabilities // []) | map(if type == "string" then ascii_downcase else ((.name // . | tostring) | ascii_downcase) end) | any(test("replication")))
-      | .spec.driver.name // empty
-    ' 2>/dev/null | head -n 1)"
-
-    if [[ -n "${has_replication}" ]]; then
-      echo "OK: Driver advertises replication (VGR uses same gRPC APIs): $has_replication"
+    has_replication="$(detect_capability_in_csiaddonsnode "replication" "$csiaddonsnode_crd")"
+    
+    if [[ "${has_replication}" != "[]" && -n "${has_replication}" ]]; then
+      drivers_repl="$(echo "$has_replication" | jq -r '.[] | .driver' | sort -u | tr '\n' ', ' | sed 's/,$//')"
+      echo "OK: Driver advertises replication (VGR uses same gRPC APIs): $drivers_repl"
     else
       echo "RESULT: No driver advertises replication. VGR requires replication capability."
       echo "        If CRDs are installed but capability missing: CSI driver may need update."
@@ -267,9 +456,37 @@ check_volumegroupreplication() {
   fi
 
   echo
+  echo "## Per-driver VOLUME_GROUP_REPLICATION capability"
+  if [[ -z "${csiaddonsnode_crd}" || "${csiaddonsnode_crd}" == "null" ]]; then
+    echo "SKIP: CSIAddonsNode CRD is not installed."
+  else
+    has_vgr_capability="$(detect_capability_in_csiaddonsnode "volume_group_replication" "$csiaddonsnode_crd")"
+
+    if [[ "${has_vgr_capability}" == "[]" || -z "${has_vgr_capability}" ]]; then
+      echo "RESULT: No driver advertises VOLUME_GROUP_REPLICATION capability."
+      echo "        Group replication support requires explicit VOLUME_GROUP_REPLICATION capability."
+      EXIT_CODE=1
+    else
+      drivers_vgr="$(echo "$has_vgr_capability" | jq -r '.[] | .driver' | sort -u | tr '\n' ', ' | sed 's/,$//')"
+      echo "OK: Driver(s) advertise VOLUME_GROUP_REPLICATION capability: $drivers_vgr"
+      echo "$has_vgr_capability" | jq -r '.[] | "  - \(.driver): \(.capability)"' | sort -u
+    fi
+  fi
+
+  print_vgr_sidecar_summary
+  print_csiaddonsnode_vgr_table "${csiaddonsnode_crd}"
+  print_vgr_configuration_verdict "${csiaddonsnode_crd}"
+  if [[ "${DETAILED}" == "true" ]]; then
+    print_vgr_detailed_extras "${csiaddonsnode_crd}"
+  fi
+
+  echo
   echo "== VolumeGroupReplication notes =="
   echo "- VGR CRDs come from kubernetes-csi-addons. Rook (v1.10+) no longer ships them."
   echo "- Ceph CSI driver supports replication; install CRDs if missing."
+  echo "- VOLUME_GROUP_REPLICATION capability indicates support for group replication operations."
+  echo "- kubernetes-csi-addons v0.13+ is recommended for VGR reconciliation; match sidecar/controller versions per upstream docs."
+  echo "- volume_replication.* on the RBD provisioner CSIAddonsNode is expected; volume_group_replication.* must appear there for VGR."
 }
 
 # Main

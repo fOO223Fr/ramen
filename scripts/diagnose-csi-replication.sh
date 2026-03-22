@@ -169,7 +169,7 @@ diagnose_cluster() {
     node_count=$(kubectl --context=$context get csiaddonsnode -A -o name 2>/dev/null | wc -l)
     if [ "${node_count:-0}" -gt 0 ]; then
         echo -e "${GREEN}✓ $node_count CSIAddonsNode resource(s)${NC}"
-        kubectl --context=$context get csiaddonsnode -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,DRIVER:.spec.driverName 2>/dev/null | head -8
+        kubectl --context=$context get csiaddonsnode -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,DRIVER:.spec.driver.name 2>/dev/null | head -8
     else
         echo -e "${RED}✗ No CSIAddonsNode - controller cannot reach sidecars. Run: make restart-csi-service${NC}"
     fi
