@@ -2850,6 +2850,8 @@ func (v *VRGInstance) processPVSecrets(pv *corev1.PersistentVolume, sc *storagev
 func (v *VRGInstance) cleanupPVForRestore(pv *corev1.PersistentVolume) error {
 	pv.ResourceVersion = ""
 	if pv.Spec.ClaimRef != nil {
+		// TODO(#2910): protect-time dual-side Retain PVs need claimRef=nil (no PVC
+		// yet). Failover restore keeps Name/Namespace and only clears UID/RV.
 		pv.Spec.ClaimRef.UID = ""
 		pv.Spec.ClaimRef.ResourceVersion = ""
 		pv.Spec.ClaimRef.APIVersion = ""

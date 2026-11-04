@@ -111,6 +111,11 @@ func (v *VRGInstance) reconcileVolGroupRepsAsPrimary(groupPVCs map[types.Namespa
 func (v *VRGInstance) reconcileVolGroupRepsAsSecondary(requeue *bool,
 	groupPVCs map[types.NamespacedName][]*corev1.PersistentVolumeClaim,
 ) {
+	// TODO(#2910): for gated dual-side backends (PowerStore grouping, not
+	// Global/external), when groupPVCs is empty at protect-time create
+	// secondary VGR+VGRC+VR from S3 dest-info and Retain PVs (claimRef nil).
+	// Do not conflate with the Global VGR empty-PVC readiness short-circuit below.
+	// See docs/design/dual-side-vgr-2910.md.
 	if v.hasGlobalVGRLabel() {
 		// On steady-state secondary, no PVCs match the VRG selector.
 		// Signal readiness so siblings don't wait on this VRG.
@@ -1351,6 +1356,8 @@ func (v *VRGInstance) cleanupVGRCForRestore(vgrc *volrep.VolumeGroupReplicationC
 	// on this (destination) cluster.
 	if vgrc.Annotations != nil {
 		if destHandle, ok := vgrc.Annotations[destinationVolumeGroupHandleAnnotation]; ok && destHandle != "" {
+			// TODO(#2910): defensive strip of "/arrayId" suffix for Dell REST
+			// DestInfo before assigning (lab UUID/arrayId vs driver UUID-only).
 			v.log.V(1).Info("Set VGRC volume group replication handle from destination handle",
 				"VGRC", vgrc.Name, "handle", destHandle)
 			vgrc.Spec.VolumeGroupReplicationHandle = destHandle
