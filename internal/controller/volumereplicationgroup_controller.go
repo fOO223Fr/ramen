@@ -1798,6 +1798,9 @@ func (v *VRGInstance) reconcileAsSecondary() ctrl.Result {
 
 	result.Requeue = v.ensureSecondaryState() || result.Requeue
 	result.Requeue = v.reconcileVolSyncAsSecondary() || result.Requeue
+	// TODO(#2910): dual-side path may restore VGR/VGRC/Retain PVs while staying
+	// Secondary (today cluster-data restore runs only on Primary). Gate + order
+	// relative to reconcileVolRepsAsSecondary TBD; see docs/design/dual-side-vgr-2910.md.
 	result.Requeue = v.reconcileVolRepsAsSecondary() || result.Requeue
 
 	// Create/update the Velero ResourceModifier ConfigMap for static IP translation.

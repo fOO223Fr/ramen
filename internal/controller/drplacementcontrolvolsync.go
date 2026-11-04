@@ -341,6 +341,10 @@ func (d *DRPCInstance) refreshVRGSecondarySpec(srcCluster, dstCluster string) (*
 	}
 
 	dstVRG := d.newVRG(dstCluster, rmn.Secondary, nil)
+	// TODO(#2910): protect-time dual-side VGR may annotate Secondary VRG here
+	// (gate: non-offloaded Grouping + provisioner allowlist) so the managed
+	// cluster restores VGR+VGRC+Retain PVs without workload PVCs. See
+	// docs/design/dual-side-vgr-2910.md.
 
 	// Note: setVRGAnnotations() sets the dry-run annotation on the failover cluster
 
