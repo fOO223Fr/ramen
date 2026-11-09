@@ -31,6 +31,11 @@ import (
 	rmnutil "github.com/ramendr/ramen/internal/controller/util"
 )
 
+// errNoReplicationClassMatch marks a genuine no-match when selecting a VRC/VGRC
+// for a StorageClass (including empty class lists). Other select errors (API
+// failures, ambiguous defaults) are returned as-is.
+var errNoReplicationClassMatch = errors.New("no matching replication class")
+
 const (
 	// defaultVRCAnnotationKey is the default annotation key for VolumeReplicationClass
 	defaultVRCAnnotationKey = "replication.storage.openshift.io/is-default-class"
@@ -1633,7 +1638,8 @@ func (v *VRGInstance) selectReplicationClassForStorageClass(
 	if len(v.replClassList.Items) == 0 && len(v.grpReplClassList.Items) == 0 {
 		v.log.Info("No VolumeReplicationClass and VolumeGroupReplicationClass available")
 
-		return nil, fmt.Errorf("no VolumeReplicationClass and VolumeGroupReplicationClass available")
+		return nil, fmt.Errorf("%w: no VolumeReplicationClass and VolumeGroupReplicationClass available",
+			errNoReplicationClassMatch)
 	}
 
 	matchingReplicationClassList := []client.Object{}
@@ -1707,7 +1713,8 @@ func (v *VRGInstance) selectReplicationClassForStorageClass(
 		v.log.Info(fmt.Sprintf("No %s found to match provisioner and schedule %s/%s", objType,
 			storageClass.Provisioner, v.instance.Spec.Async.SchedulingInterval))
 
-		return nil, fmt.Errorf("no %s found to match provisioner and schedule", objType)
+		return nil, fmt.Errorf("%w: no %s found to match provisioner and schedule",
+			errNoReplicationClassMatch, objType)
 	case 1:
 		return matchingReplicationClassList[0], nil
 	}
@@ -3046,6 +3053,10 @@ func (v *VRGInstance) updatePVNodeAffinityForRestore(
 
 	topologyVal, classKind, className, err := v.accessibleTopologyForStorageClass(sc)
 	if err != nil {
+		if !errors.Is(err, errNoReplicationClassMatch) {
+			return fmt.Errorf("failed to get accessible topology for PV %s: %w", pv.Name, err)
+		}
+
 		v.log.Info("Could not find matching VRC or VGRC for PV, skipping node affinity from topology",
 			"PV", pv.Name, "error", err)
 
@@ -3079,7 +3090,11 @@ func (v *VRGInstance) accessibleTopologyForStorageClass(
 	for _, selectGroup := range []bool{false, true} {
 		obj, err := v.selectReplicationClassForStorageClass(sc, selectGroup)
 		if err != nil {
-			continue
+			if errors.Is(err, errNoReplicationClassMatch) {
+				continue
+			}
+
+			return "", "", "", err
 		}
 
 		switch c := obj.(type) {
@@ -3090,7 +3105,8 @@ func (v *VRGInstance) accessibleTopologyForStorageClass(
 		}
 	}
 
-	return "", "", "", fmt.Errorf("no matching VRC or VGRC for storage class %s", sc.Name)
+	return "", "", "", fmt.Errorf("%w: no matching VRC or VGRC for storage class %s",
+		errNoReplicationClassMatch, sc.Name)
 }
 
 func accessibleTopologyToNodeAffinity(topologyJSON string) (*corev1.VolumeNodeAffinity, error) {

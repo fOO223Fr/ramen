@@ -63,14 +63,14 @@ func nodeAffinityTestVRC(topology string) volrep.VolumeReplicationClass {
 	}
 }
 
-func nodeAffinityTestVGRC(name, topology string) volrep.VolumeGroupReplicationClass {
+func nodeAffinityTestVGRC(topology string) volrep.VolumeGroupReplicationClass {
 	params := map[string]string{ReplicationClassScheduleKey: nodeAffinityTestSchedule}
 	if topology != "" {
 		params[VRCParameterAccessibleTopology] = topology
 	}
 
 	return volrep.VolumeGroupReplicationClass{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		ObjectMeta: metav1.ObjectMeta{Name: "vgrc"},
 		Spec: volrep.VolumeGroupReplicationClassSpec{
 			Provisioner: nodeAffinityTestProvisioner,
 			Parameters:  params,
@@ -225,22 +225,22 @@ var _ = Describe("VRG volrep node affinity", func() {
 			Entry("VGRC-only topology replaces existing affinity",
 				true,
 				nil,
-				[]volrep.VolumeGroupReplicationClass{nodeAffinityTestVGRC("vgrc", topology)},
+				[]volrep.VolumeGroupReplicationClass{nodeAffinityTestVGRC(topology)},
 				requiredAffinity(inTerm(nodeAffinityTestZoneKey, "z1")), false),
 			Entry("VGRC without topology leaves affinity untouched",
 				true,
 				nil,
-				[]volrep.VolumeGroupReplicationClass{nodeAffinityTestVGRC("vgrc", "")},
+				[]volrep.VolumeGroupReplicationClass{nodeAffinityTestVGRC("")},
 				existing, false),
 			Entry("invalid VGRC topology is an error",
 				true,
 				nil,
-				[]volrep.VolumeGroupReplicationClass{nodeAffinityTestVGRC("vgrc", "not-json")},
+				[]volrep.VolumeGroupReplicationClass{nodeAffinityTestVGRC("not-json")},
 				existing, true),
 			Entry("matching VRC is preferred over VGRC",
 				true,
 				[]volrep.VolumeReplicationClass{nodeAffinityTestVRC(topology)},
-				[]volrep.VolumeGroupReplicationClass{nodeAffinityTestVGRC("vgrc", vgrcTopology)},
+				[]volrep.VolumeGroupReplicationClass{nodeAffinityTestVGRC(vgrcTopology)},
 				requiredAffinity(inTerm(nodeAffinityTestZoneKey, "z1")), false),
 		)
 	})
