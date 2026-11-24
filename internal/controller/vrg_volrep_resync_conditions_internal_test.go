@@ -15,7 +15,7 @@ import (
 	rmnutil "github.com/ramendr/ramen/internal/controller/util"
 )
 
-// expectResyncOnPrimaryConditions verifies that, while a primary VR or VGR is resyncing to the secondary, the PVC
+// expectResyncOnPrimaryConditions verifies that, while a primary VGR is resyncing to the secondary, the PVC
 // and the VRG are DataReady, so that kube objects can be restored, while the PVC is not yet protected.
 func expectResyncOnPrimaryConditions(v *VRGInstance, pvc corev1.PersistentVolumeClaim) {
 	protectedPVC := v.findProtectedPVC(pvc.Namespace, pvc.Name)
@@ -42,35 +42,12 @@ func expectResyncOnPrimaryConditions(v *VRGInstance, pvc corev1.PersistentVolume
 }
 
 var _ = Describe("VRG resync on primary conditions", func() {
-	DescribeTable("VolumeReplication",
-		func(vrState volrep.ReplicationState, conditions []metav1.Condition) {
-			v := resyncTestVRGInstanceWithObjects(GinkgoT(), true, false, resyncTestVR(vrState, conditions))
-			pvc := livePVC("pvc-a")
-
-			volRep := &volrep.VolumeReplication{}
-			Expect(v.reconciler.Get(v.ctx, types.NamespacedName{Name: "pvc-a", Namespace: "vrg-ns"}, volRep)).
-				To(Succeed())
-
-			_, _, err := v.updateVR(&pvc, volRep, volrep.Primary, logr.Discard())
-			Expect(err).NotTo(HaveOccurred())
-
-			got := &volrep.VolumeReplication{}
-			Expect(v.reconciler.Get(v.ctx, types.NamespacedName{Name: "pvc-a", Namespace: "vrg-ns"}, got)).
-				To(Succeed())
-			Expect(got.Spec.ReplicationState).To(Equal(volrep.Resync))
-
-			expectResyncOnPrimaryConditions(v, pvc)
-		},
-		Entry("is DataReady when moved from primary to resync",
-			volrep.Primary, notReplicatingConditions(resyncTestVRGeneration)),
-		Entry("is DataReady while resync is in progress",
-			volrep.Resync, resyncingConditions()),
-	)
-
 	DescribeTable("VolumeGroupReplication",
 		func(vgrState, vrState volrep.ReplicationState, conditions []metav1.Condition) {
-			v := resyncTestVRGInstanceWithObjects(GinkgoT(), true, false,
-				resyncTestVGR(vgrState, "pvc-a", conditions), resyncTestVR(vrState, conditions))
+			v := resyncTestVRGInstanceWithObjects(GinkgoT(), false,
+				resyncTestVGR(vgrState, "pvc-a", conditions),
+				resyncTestVR(vrState, conditions),
+				resyncTestVGRC(true))
 			pvc := livePVC("pvc-a")
 			key := types.NamespacedName{Name: "vgr-a", Namespace: "vrg-ns"}
 

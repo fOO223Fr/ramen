@@ -914,12 +914,22 @@ func (v *VRGInstance) updatePVCsConditionsAfterStateChange(pvcs []*corev1.Persis
 }
 
 // primaryVGRReplicationState returns the replication state to set on a VGR that the VRG wants as primary,
-// handling the resync-on-primary annotation using the status of the VR backing the VGR. Global VGRs are shared
-// with sibling VRGs and are always set to primary.
+// handling resync-on-primary when the VGR's VolumeGroupReplicationClass carries the label. Global VGRs are
+// shared with sibling VRGs and are always set to primary.
 func (v *VRGInstance) primaryVGRReplicationState(vgr *volrep.VolumeGroupReplication,
 	log logr.Logger,
 ) (volrep.ReplicationState, error) {
-	if !v.resyncOnPrimaryEnabled() || v.hasGlobalVGRLabel() {
+	if rmnutil.ResourceIsDeleted(v.instance) || v.hasGlobalVGRLabel() {
+		return volrep.Primary, nil
+	}
+
+	enabled, err := v.resyncOnPrimaryEnabledForVGR(vgr, log)
+	if err != nil {
+		return volrep.Primary, err
+	}
+
+	// Primary when disabled: removing the VGRC label must abort an in-progress Resync.
+	if !enabled {
 		return volrep.Primary, nil
 	}
 
@@ -929,6 +939,42 @@ func (v *VRGInstance) primaryVGRReplicationState(vgr *volrep.VolumeGroupReplicat
 	}
 
 	return v.primaryReplicationState(vgr.Spec.ReplicationState, backingVR, log), nil
+}
+
+// resyncOnPrimaryEnabledForVGR reports whether the VGR's VolumeGroupReplicationClass has
+// ramendr.openshift.io/resync-on-primary=true.
+func (v *VRGInstance) resyncOnPrimaryEnabledForVGR(vgr *volrep.VolumeGroupReplication,
+	log logr.Logger,
+) (bool, error) {
+	className := vgr.Spec.VolumeGroupReplicationClassName
+	if className == "" {
+		return false, nil
+	}
+
+	if v.grpReplClassList != nil {
+		for i := range v.grpReplClassList.Items {
+			if v.grpReplClassList.Items[i].Name == className {
+				return rmnutil.IsResyncOnPrimaryEnabled(v.grpReplClassList.Items[i].GetLabels()), nil
+			}
+		}
+	}
+
+	vgrClass := &volrep.VolumeGroupReplicationClass{}
+
+	err := v.reconciler.Get(v.ctx, types.NamespacedName{Name: className}, vgrClass)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false, nil
+		}
+
+		log.Error(err, "Failed to get VolumeGroupReplicationClass for resync-on-primary check",
+			"volumeGroupReplicationClass", className)
+
+		return false, fmt.Errorf("failed to get VolumeGroupReplicationClass (%s) for VGR (%s/%s): %w",
+			className, vgr.Namespace, vgr.Name, err)
+	}
+
+	return rmnutil.IsResyncOnPrimaryEnabled(vgrClass.GetLabels()), nil
 }
 
 // getVGRVolumeReplication returns the VR backing a VGR, or nil if it is not yet known (empty name / NotFound).

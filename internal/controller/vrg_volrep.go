@@ -1541,18 +1541,11 @@ func (v *VRGInstance) updateVR(pvc *corev1.PersistentVolumeClaim, volRep *volrep
 ) (bool, bool, error) {
 	const requeue = true
 
-	if state == volrep.Primary {
-		state = v.primaryReplicationState(volRep.Spec.ReplicationState, volRep, log)
-	}
+	// Resync-on-primary is grouping-only (VolumeGroupReplicationClass label). The VR-only
+	// path is unsupported, so a desired Primary stays Primary here.
 
 	// If state is already as desired, check the status
 	if volRep.Spec.ReplicationState == state && volRep.Spec.AutoResync == v.autoResync(state) {
-		if state == volrep.Resync {
-			v.updatePVCsResyncingConditions([]*corev1.PersistentVolumeClaim{pvc})
-
-			return !requeue, false, nil
-		}
-
 		log.Info("VolumeReplication and VolumeReplicationGroup state and autoresync match. Proceeding to status check")
 
 		return !requeue, v.checkVRStatus([]*corev1.PersistentVolumeClaim{pvc}, volRep, &volRep.Status), nil
@@ -1586,35 +1579,21 @@ func (v *VRGInstance) updateVR(pvc *corev1.PersistentVolumeClaim, volRep *volrep
 	return !requeue, false, nil
 }
 
-// resyncOnPrimaryEnabled returns true if the VRG has the resync-on-primary annotation set to "true"
-// and is not being deleted.
-func (v *VRGInstance) resyncOnPrimaryEnabled() bool {
-	return !rmnutil.ResourceIsDeleted(v.instance) &&
-		rmnutil.IsResyncOnPrimaryEnabled(v.instance.GetAnnotations())
-}
-
-// primaryReplicationState returns the replication state to set on a VR or VGR that the VRG wants as primary.
+// primaryReplicationState returns the replication state to set on a VGR that the VRG wants as primary.
+// Callers must only invoke this when resync-on-primary is enabled for the VGR (VGRC label).
 //
-// currentState is the replication state currently in the spec of the VR or VGR. volRep is the VR whose status
-// is used to decide whether replication or resync is happening; for a VGR this is the VR that backs it, as the
-// VGR status conditions are stamped with the VGR generation and so cannot be checked for staleness.
+// currentState is the replication state currently in the Spec of the VGR. volRep is the backing VR whose
+// status is used to decide whether replication or resync is happening; csi-addons stamps VGR conditions
+// with the VGR generation, which would make promoted conditions look like a completed resync.
 //
-// When the resync-on-primary annotation is set to "true" on the VRG:
-//   - A primary VR or VGR that is not replicating to the secondary is moved to resync
-//   - A VR or VGR in resync is kept in resync until the resync completes, and is then moved back to primary
-//
-// Otherwise primary is returned.
+// Behavior when enabled:
+//   - A primary VGR that is not replicating to the secondary is moved to resync
+//   - A VGR in resync is kept in resync until the resync completes, then moved back to primary
 func (v *VRGInstance) primaryReplicationState(currentState volrep.ReplicationState,
 	volRep *volrep.VolumeReplication, log logr.Logger,
 ) (retState volrep.ReplicationState) {
-	if !v.resyncOnPrimaryEnabled() {
-		// Primary, not currentState: removing the annotation must abort an in-progress Resync.
-		return volrep.Primary
-	}
-
 	defer func() {
 		log.Info("primaryReplicationState",
-			"resync-on-primary", v.instance.GetAnnotations()[rmnutil.ResyncOnPrimaryAnnotation],
 			"currentState", currentState, "state", retState)
 	}()
 
@@ -1666,8 +1645,8 @@ func vrResyncCompleted(volRep *volrep.VolumeReplication) bool {
 	return notDegraded && notResyncing
 }
 
-// updatePVCsResyncingConditions updates the PVC conditions while their VR or VGR is resyncing as a result of
-// the resync-on-primary annotation.
+// updatePVCsResyncingConditions updates the PVC conditions while their VGR is resyncing as a result of
+// resync-on-primary (VolumeGroupReplicationClass label).
 //
 // A VR or VGR is only moved to resync after it was promoted, so the volume is usable on this cluster and the PVC
 // is DataReady. Only protection is affected: DataProtected is progressing and ReplicationHealthy is False until

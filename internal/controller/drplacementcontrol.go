@@ -1991,8 +1991,7 @@ func (d *DRPCInstance) setVRGAnnotations(vrg *rmn.VolumeReplicationGroup, homeCl
 		rmnutil.IsCGEnabledAnnotation:         d.instance.GetAnnotations()[rmnutil.IsCGEnabledAnnotation],
 		rmnutil.IsSubmarinerEnabledAnnotation: d.instance.GetAnnotations()[rmnutil.IsSubmarinerEnabledAnnotation],
 		rmnutil.UseVolSyncAnnotation:          d.instance.GetAnnotations()[rmnutil.UseVolSyncAnnotation],
-		rmnutil.EnableDiffAnnotation:          d.instance.GetAnnotations()[rmnutil.EnableDiffAnnotation],
-		rmnutil.ResyncOnPrimaryAnnotation:     d.instance.GetAnnotations()[rmnutil.ResyncOnPrimaryAnnotation],
+		rmnutil.EnableDiffAnnotation: d.instance.GetAnnotations()[rmnutil.EnableDiffAnnotation],
 	}
 
 	if d.instance.Spec.DryRun && homeCluster == d.instance.Spec.FailoverCluster {

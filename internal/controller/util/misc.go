@@ -40,8 +40,10 @@ const (
 	// When this annotation is set to true, differential (incremental) syncs will be enabled for CephFS CG.
 	EnableDiffAnnotation = "drplacementcontrol.ramendr.openshift.io/enable-diff"
 
-	// When this annotation is set to "true", resyncing on the primary will be enabled.
-	ResyncOnPrimaryAnnotation = "drplacementcontrol.ramendr.openshift.io/resync-on-primary"
+	// When this label is set to "true" on a VolumeGroupReplicationClass, VGRs that use
+	// that class resync on primary when not replicating to the secondary. Storage admins
+	// set this on the class (grouping path only; VolumeReplicationClass / VR-only is unsupported).
+	ResyncOnPrimaryLabel = "ramendr.openshift.io/resync-on-primary"
 
 	MaxK8sLabelLength = validation.DNS1123LabelMaxLength
 	MaxK8sNameLength  = validation.DNS1123LabelMaxLength
@@ -425,9 +427,9 @@ func IsDiffSyncEnabled(annotations map[string]string) bool {
 	return annotations[EnableDiffAnnotation] == "true"
 }
 
-// IsResyncOnPrimaryEnabled checks if the resync-on-primary annotation is set to true on the resource
-func IsResyncOnPrimaryEnabled(annotations map[string]string) bool {
-	return annotations[ResyncOnPrimaryAnnotation] == "true"
+// IsResyncOnPrimaryEnabled checks if the resync-on-primary label is set to "true".
+func IsResyncOnPrimaryEnabled(labels map[string]string) bool {
+	return labels[ResyncOnPrimaryLabel] == "true"
 }
 
 func TrimToK8sResourceNameLength(name string) string {
